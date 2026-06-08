@@ -162,6 +162,13 @@ def abs(x):
     return absolute(x)
 
 
+def fabs(x):
+    x = convert_to_tensor(x)
+    dtype = dtypes.result_type(x.dtype, float)
+    x = x.astype(_to_mlx_dtype(dtype))
+    return mx.abs(x)
+
+
 def all(x, axis=None, keepdims=False):
     axis = standardize_axis_for_numpy(axis)
     x = convert_to_tensor(x)
@@ -1279,6 +1286,19 @@ def maximum(x1, x2):
     return mx.maximum(x1, x2)
 
 
+def fmax(x1, x2):
+    x1 = convert_to_tensor(x1)
+    x2 = convert_to_tensor(x2)
+    dtype = dtypes.result_type(x1.dtype, x2.dtype)
+    x1 = x1.astype(_to_mlx_dtype(dtype))
+    x2 = x2.astype(_to_mlx_dtype(dtype))
+    return mx.where(
+        mx.isnan(x1),
+        x2,
+        mx.where(mx.isnan(x2), x1, mx.maximum(x1, x2)),
+    )
+
+
 def median(x, axis=None, keepdims=False):
     x = convert_to_tensor(x)
     dtype = dtypes.result_type(x.dtype, float)
@@ -1315,6 +1335,19 @@ def minimum(x1, x2):
     x1 = convert_to_tensor(x1, dtype)
     x2 = convert_to_tensor(x2, dtype)
     return mx.minimum(x1, x2)
+
+
+def fmin(x1, x2):
+    x1 = convert_to_tensor(x1)
+    x2 = convert_to_tensor(x2)
+    dtype = dtypes.result_type(x1.dtype, x2.dtype)
+    x1 = x1.astype(_to_mlx_dtype(dtype))
+    x2 = x2.astype(_to_mlx_dtype(dtype))
+    return mx.where(
+        mx.isnan(x1),
+        x2,
+        mx.where(mx.isnan(x2), x1, mx.minimum(x1, x2)),
+    )
 
 
 def mod(x1, x2):
@@ -1452,6 +1485,24 @@ def nanmin(x, axis=None, keepdims=False):
     x_filled = mx.where(mx.isnan(x), convert_to_tensor(float("inf"), dtype=x.dtype), x)
     result = mx.min(x_filled, axis=axis, keepdims=keepdims)
     return mx.where(all_nan, convert_to_tensor(float("nan"), dtype=result.dtype), result)
+
+
+def nanpercentile(x, q, axis=None, method="linear", keepdims=False):
+    x = convert_to_tensor(x)
+    ori_dtype = standardize_dtype(x.dtype)
+    if ori_dtype == "bool":
+        x = x.astype(_to_mlx_dtype(config.floatx()))
+    dtype = dtypes.result_type(x.dtype, float)
+    x = x.astype(_to_mlx_dtype(dtype))
+    q = convert_to_tensor(q, dtype=dtype) / 100
+    x_filled = mx.where(
+        mx.isnan(x),
+        convert_to_tensor(float("inf"), dtype=x.dtype),
+        x,
+    )
+    return _nanquantile_impl(
+        x_filled, q, axis=axis, method=method, keepdims=keepdims
+    )
 
 
 def nanprod(x, axis=None, keepdims=False):
@@ -1669,6 +1720,21 @@ def pad(x, pad_width, mode="constant", constant_values=None):
     return x
 
 
+def percentile(x, q, axis=None, method="linear", keepdims=False):
+    axis = standardize_axis_for_numpy(axis)
+    x = convert_to_tensor(x)
+    ori_dtype = standardize_dtype(x.dtype)
+    if ori_dtype == "bool":
+        x = x.astype(_to_mlx_dtype(config.floatx()))
+    if ori_dtype == "int64":
+        dtype = config.floatx()
+    else:
+        dtype = dtypes.result_type(x.dtype, float)
+    x = x.astype(_to_mlx_dtype(dtype))
+    q = convert_to_tensor(q, dtype=dtype) / 100
+    return _quantile_impl(x, q, axis=axis, method=method, keepdims=keepdims)
+
+
 def prod(x, axis=None, keepdims=False, dtype=None):
     axis = standardize_axis_for_numpy(axis)
     x = convert_to_tensor(x)
@@ -1689,102 +1755,111 @@ def ptp(x, axis=None, keepdims=False):
     )
 
 
+def _quantile_reduced_axes(axis, ndim):
+    if axis is None:
+        return list(range(ndim))
+    if isinstance(axis, (list, tuple)):
+        return sorted(a % ndim for a in axis)
+    return [axis % ndim]
+
+
+def _quantile_to_work(x, reduced):
+    ndim = x.ndim
+    other = [a for a in range(ndim) if a not in reduced]
+    perm = other + reduced
+    xt = mx.transpose(x, perm)
+    other_shape = [x.shape[a] for a in other]
+    merged = 1
+    for a in reduced:
+        merged *= x.shape[a]
+    return mx.reshape(xt, other_shape + [merged]), other_shape
+
+
+def _quantile_interp(sorted_x, indices, method, gather):
+    n = sorted_x.shape[-1]
+    lo = mx.clip(mx.floor(indices).astype(mx.int32), 0, n - 1)
+    hi = mx.clip(mx.ceil(indices).astype(mx.int32), 0, n - 1)
+    if method == "nearest":
+        idx = mx.clip(mx.round(indices).astype(mx.int32), 0, n - 1)
+        return gather(sorted_x, idx)
+    lo_vals = gather(sorted_x, lo)
+    hi_vals = gather(sorted_x, hi)
+    if method == "lower":
+        return lo_vals
+    if method == "higher":
+        return hi_vals
+    if method == "midpoint":
+        return (lo_vals + hi_vals) / 2
+    frac = indices - mx.floor(indices)
+    return lo_vals + frac * (hi_vals - lo_vals)
+
+
+def _quantile_finalize(result, q, k, orig_shape, reduced, scalar_q, keepdims):
+    result = mx.moveaxis(result, result.ndim - 1, 0)
+    if keepdims:
+        target = [k] + [
+            1 if a in reduced else orig_shape[a]
+            for a in range(len(orig_shape))
+        ]
+        result = mx.reshape(result, target)
+    if scalar_q:
+        result = mx.squeeze(result, axis=0)
+    return result
+
+
 def _nanquantile_impl(x, q, axis=None, method="linear", keepdims=False):
     """Like _quantile_impl but uses non-inf count (inf = replaced NaN)."""
     scalar_q = q.ndim == 0
     if scalar_q:
         q = mx.expand_dims(q, 0)
+    k = q.shape[0]
+    orig_shape = list(x.shape)
+    reduced = _quantile_reduced_axes(axis, x.ndim)
+    work, other_shape = _quantile_to_work(x, reduced)
+    sorted_x = mx.sort(work, axis=-1)
 
-    if axis is None:
-        x = mx.flatten(x)
-        axis = 0
-
-    sorted_x = mx.sort(x, axis=axis)
-    # Count non-inf (i.e., non-NaN) elements per slice
     n_valid = mx.sum(
-        (sorted_x < float("inf")).astype(mx.int32), axis=axis, keepdims=True
+        (sorted_x < float("inf")).astype(mx.int32), axis=-1, keepdims=True
     ).astype(sorted_x.dtype)
+    all_nan = n_valid == 0
+    n_safe = mx.where(
+        all_nan, convert_to_tensor(1, dtype=sorted_x.dtype), n_valid
+    )
+    q_row = mx.reshape(q, [1] * len(other_shape) + [k])
+    indices = q_row * (n_safe - 1)
 
-    indices = q * (n_valid - 1)
-    lo = mx.clip(mx.floor(indices).astype(mx.int32), 0, sorted_x.shape[axis] - 1)
-    hi = mx.clip(lo + 1, 0, sorted_x.shape[axis] - 1)
-    frac = indices - mx.floor(indices)
+    def gather(arr, idx):
+        return mx.take_along_axis(arr, idx, axis=-1)
 
-    ax = axis % sorted_x.ndim
-    lo_vals = mx.take(sorted_x, lo.astype(mx.int32), axis=ax)
-    hi_vals = mx.take(sorted_x, hi.astype(mx.int32), axis=ax)
-
-    shape = [1] * sorted_x.ndim
-    shape[ax] = -1
-    frac = mx.reshape(frac, shape)
-
-    result = lo_vals + frac * (hi_vals - lo_vals)
-
-    if keepdims:
-        result = mx.expand_dims(result, axis=ax)
-
-    if scalar_q:
-        result = mx.squeeze(result, axis=ax)
-
-    return result
+    result = _quantile_interp(sorted_x, indices, method, gather)
+    result = mx.where(
+        all_nan, convert_to_tensor(float("nan"), dtype=result.dtype), result
+    )
+    return _quantile_finalize(
+        result, q, k, orig_shape, reduced, scalar_q, keepdims
+    )
 
 
 def _quantile_impl(x, q, axis=None, method="linear", keepdims=False):
-    """Sort-based quantile using linear interpolation, pure MLX."""
+    """Sort-based quantile with linear/lower/higher/midpoint/nearest, MLX."""
     scalar_q = q.ndim == 0
     if scalar_q:
         q = mx.expand_dims(q, 0)
+    k = q.shape[0]
+    orig_shape = list(x.shape)
+    reduced = _quantile_reduced_axes(axis, x.ndim)
+    work, _ = _quantile_to_work(x, reduced)
+    sorted_x = mx.sort(work, axis=-1)
 
-    if axis is None:
-        x = mx.flatten(x)
-        axis = 0
-    elif isinstance(axis, (list, tuple)):
-        # Merge multiple axes: transpose target axes to end, flatten them
-        ndim = x.ndim
-        axes = [a % ndim for a in axis]
-        other = sorted(set(range(ndim)) - set(axes))
-        perm = other + sorted(axes)
-        x = mx.transpose(x, perm)
-        other_shape = [x.shape[i] for i in range(len(other))]
-        merged = 1
-        for a in axes:
-            merged *= x.shape[perm.index(a)]
-        x = mx.reshape(x, other_shape + [merged])
-        axis = -1
+    indices = q * (sorted_x.shape[-1] - 1)
 
-    sorted_x = mx.sort(x, axis=axis)
-    n = sorted_x.shape[axis]
+    def gather(arr, idx):
+        return mx.take(arr, idx, axis=-1)
 
-    # Compute fractional indices for "linear" interpolation
-    indices = q * (n - 1)
-    lo = mx.clip(mx.floor(indices).astype(mx.int32), 0, n - 1)
-    hi = mx.clip(lo + 1, 0, n - 1)
-    frac = indices - mx.floor(indices)
-
-    # Expand dims for broadcasting: q values index along a new leading axis
-    # Move quantile axis to front
-    ndim = sorted_x.ndim
-    ax = axis % ndim
-
-    # Gather lower and upper values
-    lo_vals = mx.take(sorted_x, lo.astype(mx.int32), axis=ax)
-    hi_vals = mx.take(sorted_x, hi.astype(mx.int32), axis=ax)
-
-    # Shape frac for broadcasting
-    shape = [1] * ndim
-    shape[ax] = -1
-    frac = mx.reshape(frac, shape)
-
-    result = lo_vals + frac * (hi_vals - lo_vals)
-
-    if keepdims:
-        if isinstance(axis, int):
-            result = mx.expand_dims(result, axis=ax)
-
-    if scalar_q:
-        result = mx.squeeze(result, axis=ax)
-
-    return result
+    result = _quantile_interp(sorted_x, indices, method, gather)
+    return _quantile_finalize(
+        result, q, k, orig_shape, reduced, scalar_q, keepdims
+    )
 
 
 def quantile(x, q, axis=None, method="linear", keepdims=False):
@@ -2157,6 +2232,181 @@ def vdot(x1, x2):
     return mx.inner(x1, x2)
 
 
+def unique(
+    x,
+    sorted=True,
+    return_index=False,
+    return_inverse=False,
+    return_counts=False,
+    axis=None,
+    size=None,
+    fill_value=None,
+):
+    x = convert_to_tensor(x)
+    is_flatten = axis is None
+    original_shape = x.shape
+
+    if is_flatten:
+        dim = 0
+        flat = mx.reshape(x, [-1])
+        n = flat.shape[0]
+        s_idx = mx.argsort(flat).astype(mx.int32)
+        s = mx.take(flat, s_idx, axis=0)
+        if n == 0:
+            is_first = mx.zeros((0,), dtype=mx.bool_)
+        else:
+            is_first = mx.concatenate(
+                [mx.array([True]), s[1:] != s[:-1]], axis=0
+            )
+    else:
+        ndim = x.ndim
+        dim = axis + ndim if axis < 0 else axis
+        moved = mx.moveaxis(x, dim, 0)
+        num_rows = moved.shape[0]
+        num_cols = math.prod(moved.shape[1:])
+        rows = mx.reshape(moved, (num_rows, num_cols))
+        n = num_rows
+        # Lexicographic (radix) sort: stable argsort per column, last to first.
+        s_idx = mx.arange(num_rows, dtype=mx.int32)
+        for col in range(num_cols - 1, -1, -1):
+            ordered_col = mx.take(rows[:, col], s_idx, axis=0)
+            perm = mx.argsort(ordered_col).astype(mx.int32)
+            s_idx = mx.take(s_idx, perm, axis=0)
+        s_rows = mx.take(rows, s_idx, axis=0)
+        if num_rows == 0:
+            is_first = mx.zeros((0,), dtype=mx.bool_)
+        elif num_cols == 0:
+            is_first = mx.concatenate(
+                [mx.array([True]), mx.zeros((num_rows - 1,), dtype=mx.bool_)],
+                axis=0,
+            )
+        else:
+            adjacent_eq = mx.all(s_rows[1:] == s_rows[:-1], axis=1)
+            is_first = mx.concatenate(
+                [mx.array([True]), mx.logical_not(adjacent_eq)], axis=0
+            )
+
+    if n == 0:
+        n_unique = 0
+    else:
+        pos = mx.cumsum(is_first.astype(mx.int32)) - 1
+        n_unique = int(pos[-1].item()) + 1
+    if n == 0:
+        pos = mx.zeros((0,), dtype=mx.int32)
+
+    # Map each original element (or row) to its unique slot via the sort perm.
+    inverse_unsorted = mx.zeros((n,), dtype=mx.int32)
+    if n > 0:
+        inverse_unsorted = inverse_unsorted.at[s_idx].add(pos)
+
+    if is_flatten:
+        if n == 0:
+            y = mx.zeros((0,), dtype=x.dtype)
+        else:
+            # `pos` is non-decreasing, so the first member of each slot is the
+            # smallest sorted position; gather the sorted value there.
+            first_sorted = mx.full((n_unique,), n, dtype=mx.int32)
+            first_sorted = first_sorted.at[pos].minimum(
+                mx.arange(n, dtype=mx.int32)
+            )
+            y = mx.take(s, first_sorted, axis=0)
+    else:
+        if n == 0:
+            y_rows = mx.zeros((0, rows.shape[1]), dtype=x.dtype)
+        else:
+            first_sorted = mx.full((n_unique,), n, dtype=mx.int32)
+            first_sorted = first_sorted.at[pos].minimum(
+                mx.arange(n, dtype=mx.int32)
+            )
+            y_rows = mx.take(s_rows, first_sorted, axis=0)
+
+    if return_counts:
+        if n == 0:
+            counts = mx.zeros((0,), dtype=mx.int32)
+        else:
+            counts = mx.zeros((n_unique,), dtype=mx.int32)
+            counts = counts.at[pos].add(mx.ones((n,), dtype=mx.int32))
+
+    if return_index:
+        # First occurrence in original order = min original index per slot.
+        if n == 0:
+            unique_indices = mx.zeros((0,), dtype=mx.int32)
+        else:
+            big = mx.array(n, dtype=mx.int32)
+            unique_indices = mx.full((n_unique,), big, dtype=mx.int32)
+            orig_idx = mx.arange(n, dtype=mx.int32)
+            unique_indices = unique_indices.at[inverse_unsorted].minimum(
+                orig_idx
+            )
+
+    if not sorted and n_unique > 0:
+        # Reorder unique slots into first-occurrence order: sort slots by the
+        # smallest original index belonging to each slot.
+        first_per_slot = mx.full((n_unique,), n, dtype=mx.int32)
+        first_per_slot = first_per_slot.at[inverse_unsorted].minimum(
+            mx.arange(n, dtype=mx.int32)
+        )
+        new_order = mx.argsort(first_per_slot).astype(mx.int32)
+        remap = mx.zeros((n_unique,), dtype=mx.int32)
+        remap = remap.at[new_order].add(mx.arange(n_unique, dtype=mx.int32))
+        if is_flatten:
+            y = mx.take(y, new_order, axis=0)
+        else:
+            y_rows = mx.take(y_rows, new_order, axis=0)
+        if return_counts:
+            counts = mx.take(counts, new_order, axis=0)
+        if return_index:
+            unique_indices = mx.take(unique_indices, new_order, axis=0)
+        inverse_unsorted = mx.take(remap, inverse_unsorted, axis=0)
+
+    # Reconstruct values back into the requested layout.
+    if is_flatten:
+        y_out = y
+        inverse = mx.reshape(inverse_unsorted, original_shape)
+    else:
+        y_rows_shaped = mx.reshape(
+            y_rows, (y_rows.shape[0],) + tuple(moved.shape[1:])
+        )
+        y_out = mx.moveaxis(y_rows_shaped, 0, dim)
+        inverse = inverse_unsorted
+
+    if size is not None:
+        trunc = builtins.min(n_unique, size)
+        pad = builtins.max(0, size - n_unique)
+        fill = 0 if fill_value is None else fill_value
+
+        keep = mx.arange(trunc, dtype=mx.int32)
+        y_out = mx.take(y_out, keep, axis=dim)
+        if pad > 0:
+            pad_shape = list(y_out.shape)
+            pad_shape[dim] = pad
+            pad_block = mx.full(pad_shape, fill, dtype=y_out.dtype)
+            y_out = mx.concatenate([y_out, pad_block], axis=dim)
+
+        if return_index:
+            unique_indices = mx.take(unique_indices, keep, axis=0)
+            if pad > 0:
+                unique_indices = mx.concatenate(
+                    [unique_indices, mx.ones((pad,), dtype=mx.int32)], axis=0
+                )
+        if return_counts:
+            counts = mx.take(counts, keep, axis=0)
+            if pad > 0:
+                counts = mx.concatenate(
+                    [counts, mx.zeros((pad,), dtype=mx.int32)], axis=0
+                )
+
+    results = [y_out]
+    if return_index:
+        results.append(unique_indices)
+    if return_inverse:
+        results.append(inverse)
+    if return_counts:
+        results.append(counts)
+
+    return tuple(results) if len(results) > 1 else results[0]
+
+
 def inner(x1, x2):
     x1 = convert_to_tensor(x1)
     x2 = convert_to_tensor(x2)
@@ -2522,3 +2772,10 @@ def histogram(x, bins=10, range=None):
     in_bin = mx.concatenate([in_bin[:, :-1], in_last], axis=1)
     hist = mx.sum(in_bin.astype(mx.int32), axis=0)
     return hist, bin_edges
+
+
+def dsplit(x, indices_or_sections):
+    x = convert_to_tensor(x)
+    if x.ndim < 3:
+        raise ValueError("dsplit only works on arrays of 3 or more dimensions")
+    return split(x, indices_or_sections, axis=2)

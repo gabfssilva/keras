@@ -2,8 +2,8 @@ import mlx.core as mx
 
 from keras.src.backend import standardize_dtype
 from keras.src.backend.common import dtypes
-from keras.src.backend.mlx.core import convert_to_tensor
 from keras.src.backend.mlx.core import _to_mlx_dtype
+from keras.src.backend.mlx.core import convert_to_tensor
 
 
 def cholesky(a, upper=False):
@@ -100,7 +100,14 @@ def qr(x, mode="reduced"):
             "Expected one of {'reduced', 'complete'}. "
             f"Received: mode={mode}"
         )
-    return mx.linalg.qr(x, mode=mode)
+    if mode == "complete":
+        raise NotImplementedError(
+            "QR decomposition with `mode='complete'` is not supported by "
+            "the MLX backend. Only `mode='reduced'` is available."
+        )
+    x = convert_to_tensor(x)
+    # MLX linalg ops are CPU-only; force a CPU compute stream.
+    return mx.linalg.qr(x, stream=mx.cpu)
 
 
 def solve(a, b):
@@ -129,6 +136,49 @@ def lstsq(a, b, rcond=None):
     # x = pinv(a) @ b
     a_pinv = mx.linalg.pinv(a)
     return mx.matmul(a_pinv, b)
+
+
+def matrix_rank(x, tol=None):
+    x = convert_to_tensor(x)
+    if x.ndim < 2:
+        raise ValueError(
+            "Expected input to have rank >= 2. "
+            f"Received input with shape {x.shape}."
+        )
+    dtype = standardize_dtype(x.dtype)
+    if "int" in dtype or dtype == "bool":
+        x = x.astype(_to_mlx_dtype(dtypes.result_type(dtype, "float32")))
+    # MLX linalg ops are CPU-only; force a CPU compute stream.
+    _, s, _ = mx.linalg.svd(x, stream=mx.cpu)
+    if tol is None:
+        eps = mx.finfo(s.dtype).eps
+        tol = mx.max(s, axis=-1, keepdims=True) * max(x.shape[-2:]) * eps
+    return mx.sum(s > tol, axis=-1).astype(mx.int32)
+
+
+def pinv(x, rcond=None):
+    x = convert_to_tensor(x)
+    if x.ndim < 2:
+        raise ValueError(
+            "Expected input to have rank >= 2. "
+            f"Received input with shape {x.shape}."
+        )
+    dtype = standardize_dtype(x.dtype)
+    if "int" in dtype or dtype == "bool":
+        x = x.astype(_to_mlx_dtype(dtypes.result_type(dtype, "float32")))
+    # MLX linalg ops are CPU-only; force a CPU compute stream.
+    if rcond is None:
+        return mx.linalg.pinv(x, stream=mx.cpu)
+    # mx.linalg.pinv has no rcond/rtol; apply the SVD-threshold cutoff
+    # manually: zero out singular values <= rcond * max(singular value).
+    u, s, vt = mx.linalg.svd(x, stream=mx.cpu)
+    k = s.shape[-1]
+    u = u[..., :, :k]
+    vt = vt[..., :k, :]
+    cutoff = rcond * mx.max(s, axis=-1, keepdims=True)
+    s_inv = mx.where(s > cutoff, mx.reciprocal(s), mx.zeros_like(s))
+    scaled = mx.swapaxes(vt, -1, -2) * s_inv[..., None, :]
+    return mx.matmul(scaled, mx.swapaxes(u, -1, -2))
 
 
 def jvp(fun, primals, tangents, has_aux=False):

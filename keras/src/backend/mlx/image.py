@@ -1,10 +1,7 @@
-import functools
-
 import ml_dtypes
 import mlx.core as mx
 
 from keras.src import backend
-from keras.src.backend.mlx.core import _flip
 from keras.src.backend.mlx.core import convert_to_tensor
 from keras.src.random.seed_generator import draw_seed
 
@@ -106,9 +103,7 @@ def rgb_to_hsv(images, data_format=None):
             norm * (r - g) + 4.0 / 6.0,
         )
         hue = mx.where(value == r, norm * (g - b), hue)
-        hue = mx.where(range_ > 0, hue, 0.0) + (hue < 0.0).astype(
-            hue.dtype
-        )
+        hue = mx.where(range_ > 0, hue, 0.0) + (hue < 0.0).astype(hue.dtype)
         return hue, saturation, value
 
     images = mx.stack(
@@ -489,9 +484,7 @@ def _resize(image, shape, method, antialias):
 def _resize_nearest(x, output_shape):
     input_shape = x.shape
     spatial_dims = tuple(
-        i
-        for i in range(len(input_shape))
-        if input_shape[i] != output_shape[i]
+        i for i in range(len(input_shape)) if input_shape[i] != output_shape[i]
     )
 
     for d in spatial_dims:
@@ -514,6 +507,7 @@ def _fill_keys_cubic_kernel(x):
 
 def _fill_lanczos_kernel(radius, x):
     import math as _math
+
     pi = _math.pi
     y = radius * mx.sin(pi * x) * mx.sin(pi * x / radius)
     out = mx.where(
@@ -572,7 +566,11 @@ def _scale_and_translate(
     if use_rounding:
         x_min = x.min()
         x_max = x.max()
-        output = mx.clip(mx.round(output), x_min.astype(output.dtype), x_max.astype(output.dtype))
+        output = mx.clip(
+            mx.round(output),
+            x_min.astype(output.dtype),
+            x_max.astype(output.dtype),
+        )
         output = output.astype(x.dtype)
     return output
 
@@ -653,10 +651,19 @@ def affine_transform(
     b1 = transform[:, 4]
     b2 = transform[:, 5]
     # Build swapped transform: [b1, t1, b2, t3, a0, a2, t6, t7]
-    transform_swapped = mx.stack([
-        b1, transform[:, 1], b2, transform[:, 3],
-        a0, a2, transform[:, 6], transform[:, 7],
-    ], axis=-1)
+    transform_swapped = mx.stack(
+        [
+            b1,
+            transform[:, 1],
+            b2,
+            transform[:, 3],
+            a0,
+            a2,
+            transform[:, 6],
+            transform[:, 7],
+        ],
+        axis=-1,
+    )
 
     transform_swapped = mx.pad(
         transform_swapped, [(0, 0), (0, 1)], constant_values=1
@@ -665,11 +672,16 @@ def affine_transform(
     offset = transform_swapped[:, 0:2, 2]
     offset = mx.pad(offset, [(0, 0), (0, 1)])
     # Zero out the offset in the transform matrix
-    transform_swapped = mx.concatenate([
-        mx.concatenate([transform_swapped[:, 0:2, 0:2],
-                        mx.zeros((batch_size, 2, 1))], axis=2),
-        transform_swapped[:, 2:3, :],
-    ], axis=1)
+    transform_swapped = mx.concatenate(
+        [
+            mx.concatenate(
+                [transform_swapped[:, 0:2, 0:2], mx.zeros((batch_size, 2, 1))],
+                axis=2,
+            ),
+            transform_swapped[:, 2:3, :],
+        ],
+        axis=1,
+    )
 
     transform_mx = transform_swapped.astype(mx.float32)
     offset_mx = offset.astype(mx.float32)
@@ -849,44 +861,124 @@ def compute_homography_matrix(start_points, end_points):
     coefficient_matrix = mx.stack(
         [
             mx.stack(
-                [end_x1, end_y1, o, z, z, z,
-                 -start_x1 * end_x1, -start_x1 * end_y1], axis=-1
+                [
+                    end_x1,
+                    end_y1,
+                    o,
+                    z,
+                    z,
+                    z,
+                    -start_x1 * end_x1,
+                    -start_x1 * end_y1,
+                ],
+                axis=-1,
             ),
             mx.stack(
-                [z, z, z, end_x1, end_y1, o,
-                 -start_y1 * end_x1, -start_y1 * end_y1], axis=-1
+                [
+                    z,
+                    z,
+                    z,
+                    end_x1,
+                    end_y1,
+                    o,
+                    -start_y1 * end_x1,
+                    -start_y1 * end_y1,
+                ],
+                axis=-1,
             ),
             mx.stack(
-                [end_x2, end_y2, o, z, z, z,
-                 -start_x2 * end_x2, -start_x2 * end_y2], axis=-1
+                [
+                    end_x2,
+                    end_y2,
+                    o,
+                    z,
+                    z,
+                    z,
+                    -start_x2 * end_x2,
+                    -start_x2 * end_y2,
+                ],
+                axis=-1,
             ),
             mx.stack(
-                [z, z, z, end_x2, end_y2, o,
-                 -start_y2 * end_x2, -start_y2 * end_y2], axis=-1
+                [
+                    z,
+                    z,
+                    z,
+                    end_x2,
+                    end_y2,
+                    o,
+                    -start_y2 * end_x2,
+                    -start_y2 * end_y2,
+                ],
+                axis=-1,
             ),
             mx.stack(
-                [end_x3, end_y3, o, z, z, z,
-                 -start_x3 * end_x3, -start_x3 * end_y3], axis=-1
+                [
+                    end_x3,
+                    end_y3,
+                    o,
+                    z,
+                    z,
+                    z,
+                    -start_x3 * end_x3,
+                    -start_x3 * end_y3,
+                ],
+                axis=-1,
             ),
             mx.stack(
-                [z, z, z, end_x3, end_y3, o,
-                 -start_y3 * end_x3, -start_y3 * end_y3], axis=-1
+                [
+                    z,
+                    z,
+                    z,
+                    end_x3,
+                    end_y3,
+                    o,
+                    -start_y3 * end_x3,
+                    -start_y3 * end_y3,
+                ],
+                axis=-1,
             ),
             mx.stack(
-                [end_x4, end_y4, o, z, z, z,
-                 -start_x4 * end_x4, -start_x4 * end_y4], axis=-1
+                [
+                    end_x4,
+                    end_y4,
+                    o,
+                    z,
+                    z,
+                    z,
+                    -start_x4 * end_x4,
+                    -start_x4 * end_y4,
+                ],
+                axis=-1,
             ),
             mx.stack(
-                [z, z, z, end_x4, end_y4, o,
-                 -start_y4 * end_x4, -start_y4 * end_y4], axis=-1
+                [
+                    z,
+                    z,
+                    z,
+                    end_x4,
+                    end_y4,
+                    o,
+                    -start_y4 * end_x4,
+                    -start_y4 * end_y4,
+                ],
+                axis=-1,
             ),
         ],
         axis=1,
     )
 
     target_vector = mx.stack(
-        [start_x1, start_y1, start_x2, start_y2,
-         start_x3, start_y3, start_x4, start_y4],
+        [
+            start_x1,
+            start_y1,
+            start_x2,
+            start_y2,
+            start_x3,
+            start_y3,
+            start_x4,
+            start_y4,
+        ],
         axis=-1,
     )
     target_vector = mx.expand_dims(target_vector, axis=-1)
@@ -960,12 +1052,21 @@ def map_coordinates(
 
     if order == 0:
         # Nearest-neighbor interpolation
-        indices = [mx.clip(mx.round(coordinates[i]).astype(mx.int32), 0, inputs.shape[i] - 1)
-                   for i in range(ndim)]
+        indices = [
+            mx.clip(
+                mx.round(coordinates[i]).astype(mx.int32),
+                0,
+                inputs.shape[i] - 1,
+            )
+            for i in range(ndim)
+        ]
         if fill_mode != "constant":
-            indices = [_apply_fill_mode(
-                mx.round(coordinates[i]).astype(mx.int32), inputs.shape[i]
-            ) for i in range(ndim)]
+            indices = [
+                _apply_fill_mode(
+                    mx.round(coordinates[i]).astype(mx.int32), inputs.shape[i]
+                )
+                for i in range(ndim)
+            ]
         result = inputs
         for i in range(ndim):
             result = mx.take(result, indices[i], axis=i)
@@ -977,11 +1078,17 @@ def map_coordinates(
             mask = mx.ones(coordinates.shape[1:], dtype=mx.bool_)
             for i in range(ndim):
                 idx = mx.round(coordinates[i]).astype(mx.int32)
-                mask = mx.logical_and(mask, mx.logical_and(idx >= 0, idx < inputs.shape[i]))
-            result = mx.where(mask, result, mx.array(fill_value, dtype=compute_dtype))
+                mask = mx.logical_and(
+                    mask, mx.logical_and(idx >= 0, idx < inputs.shape[i])
+                )
+            result = mx.where(
+                mask, result, mx.array(fill_value, dtype=compute_dtype)
+            )
     else:
         # Bilinear interpolation
-        coords_floor = [mx.floor(coordinates[i]).astype(mx.int32) for i in range(ndim)]
+        coords_floor = [
+            mx.floor(coordinates[i]).astype(mx.int32) for i in range(ndim)
+        ]
         coords_ceil = [c + 1 for c in coords_floor]
         fracs = [coordinates[i] - mx.floor(coordinates[i]) for i in range(ndim)]
 
@@ -990,6 +1097,7 @@ def map_coordinates(
             def safe_idx(c, size):
                 return mx.clip(c, 0, size - 1)
         else:
+
             def safe_idx(c, size):
                 return _apply_fill_mode(c, size)
 
@@ -1005,15 +1113,23 @@ def map_coordinates(
             v10 = inputs[y1, x0]
             v11 = inputs[y1, x1]
 
-            result = (v00 * (1 - fy) * (1 - fx) + v01 * (1 - fy) * fx
-                      + v10 * fy * (1 - fx) + v11 * fy * fx)
+            result = (
+                v00 * (1 - fy) * (1 - fx)
+                + v01 * (1 - fy) * fx
+                + v10 * fy * (1 - fx)
+                + v11 * fy * fx
+            )
 
             if fill_mode == "constant":
                 mask = (
-                    (coords_floor[0] >= 0) & (coords_ceil[0] < inputs.shape[0])
-                    & (coords_floor[1] >= 0) & (coords_ceil[1] < inputs.shape[1])
+                    (coords_floor[0] >= 0)
+                    & (coords_ceil[0] < inputs.shape[0])
+                    & (coords_floor[1] >= 0)
+                    & (coords_ceil[1] < inputs.shape[1])
                 )
-                result = mx.where(mask, result, mx.array(fill_value, dtype=compute_dtype))
+                result = mx.where(
+                    mask, result, mx.array(fill_value, dtype=compute_dtype)
+                )
         elif ndim == 3:
             z0 = safe_idx(coords_floor[0], inputs.shape[0])
             z1 = safe_idx(coords_ceil[0], inputs.shape[0])
@@ -1045,11 +1161,16 @@ def map_coordinates(
 
             if fill_mode == "constant":
                 mask = (
-                    (coords_floor[0] >= 0) & (coords_ceil[0] < inputs.shape[0])
-                    & (coords_floor[1] >= 0) & (coords_ceil[1] < inputs.shape[1])
-                    & (coords_floor[2] >= 0) & (coords_ceil[2] < inputs.shape[2])
+                    (coords_floor[0] >= 0)
+                    & (coords_ceil[0] < inputs.shape[0])
+                    & (coords_floor[1] >= 0)
+                    & (coords_ceil[1] < inputs.shape[1])
+                    & (coords_floor[2] >= 0)
+                    & (coords_ceil[2] < inputs.shape[2])
                 )
-                result = mx.where(mask, result, mx.array(fill_value, dtype=compute_dtype))
+                result = mx.where(
+                    mask, result, mx.array(fill_value, dtype=compute_dtype)
+                )
         else:
             raise ValueError(
                 f"map_coordinates only supports 2D and 3D inputs, got {ndim}D"
@@ -1173,8 +1294,12 @@ def elastic_transform(
     images = convert_to_tensor(images)
     input_dtype = images.dtype
 
-    alpha_t = convert_to_tensor(alpha, dtype=backend.standardize_dtype(input_dtype))
-    sigma_t = convert_to_tensor(sigma, dtype=backend.standardize_dtype(input_dtype))
+    alpha_t = convert_to_tensor(
+        alpha, dtype=backend.standardize_dtype(input_dtype)
+    )
+    sigma_t = convert_to_tensor(
+        sigma, dtype=backend.standardize_dtype(input_dtype)
+    )
     sigma_val = float(sigma)
 
     kernel_size = (int(6 * sigma_val) | 1, int(6 * sigma_val) | 1)
@@ -1194,12 +1319,18 @@ def elastic_transform(
     seed_val = draw_seed(seed)
     key = mx.random.key(int(seed_val))
     k1, k2 = mx.random.split(key)
-    dx = mx.random.normal(
-        shape=(batch_size, height, width), key=k1
-    ).astype(mx.float32) * sigma_t
-    dy = mx.random.normal(
-        shape=(batch_size, height, width), key=k2
-    ).astype(mx.float32) * sigma_t
+    dx = (
+        mx.random.normal(shape=(batch_size, height, width), key=k1).astype(
+            mx.float32
+        )
+        * sigma_t
+    )
+    dy = (
+        mx.random.normal(shape=(batch_size, height, width), key=k2).astype(
+            mx.float32
+        )
+        * sigma_t
+    )
 
     dx = gaussian_blur(
         mx.expand_dims(dx, axis=channel_axis),
@@ -1270,6 +1401,40 @@ def elastic_transform(
 # ---------------------------------------------------------------------------
 # Scale and translate
 # ---------------------------------------------------------------------------
+
+
+def sobel_edges(images, data_format=None):
+    images = convert_to_tensor(images)
+
+    # mlx.core.conv2d expects NHWC, so keep channels_last and transpose
+    # channels_first inputs in/out (mirrors gaussian_blur in this file).
+    if data_format == "channels_first":
+        images = mx.transpose(images, (0, 2, 3, 1))
+
+    num_channels = images.shape[-1]
+
+    sobel_x = mx.array([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]], dtype=images.dtype)
+    sobel_y = mx.array([[-1, -2, -1], [0, 0, 0], [1, 2, 1]], dtype=images.dtype)
+
+    images = mx.pad(images, [(0, 0), (1, 1), (1, 1), (0, 0)])
+
+    kernel_x = mx.broadcast_to(
+        sobel_x[None, :, :, None], (num_channels, 3, 3, 1)
+    )
+    kernel_y = mx.broadcast_to(
+        sobel_y[None, :, :, None], (num_channels, 3, 3, 1)
+    )
+
+    edges_x = mx.conv2d(images, kernel_x, groups=num_channels)
+    edges_y = mx.conv2d(images, kernel_y, groups=num_channels)
+
+    if data_format == "channels_first":
+        edges_x = mx.transpose(edges_x, (0, 3, 1, 2))
+        edges_y = mx.transpose(edges_y, (0, 3, 1, 2))
+
+    edges = mx.stack([edges_y, edges_x], axis=-1)
+
+    return edges
 
 
 def scale_and_translate(

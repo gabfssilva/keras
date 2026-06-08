@@ -264,6 +264,58 @@ def lstm(
     return last_output, outputs, [h, c]
 
 
+def bidirectional_lstm(
+    inputs,
+    fwd_initial_state_h,
+    fwd_initial_state_c,
+    bwd_initial_state_h,
+    bwd_initial_state_c,
+    mask,
+    fwd_kernel,
+    fwd_recurrent_kernel,
+    fwd_bias,
+    bwd_kernel,
+    bwd_recurrent_kernel,
+    bwd_bias,
+    activation,
+    recurrent_activation,
+    return_sequences=False,
+    unroll=False,
+):
+    if mask is not None:
+        raise NotImplementedError
+
+    fwd_out = lstm(
+        inputs,
+        fwd_initial_state_h,
+        fwd_initial_state_c,
+        None,
+        fwd_kernel,
+        fwd_recurrent_kernel,
+        fwd_bias,
+        activation,
+        recurrent_activation,
+        return_sequences=return_sequences,
+        go_backwards=False,
+        unroll=unroll,
+    )
+    bwd_out = lstm(
+        inputs,
+        bwd_initial_state_h,
+        bwd_initial_state_c,
+        None,
+        bwd_kernel,
+        bwd_recurrent_kernel,
+        bwd_bias,
+        activation,
+        recurrent_activation,
+        return_sequences=return_sequences,
+        go_backwards=True,
+        unroll=unroll,
+    )
+    return fwd_out, bwd_out
+
+
 def gru(
     inputs,
     initial_state,
@@ -371,6 +423,57 @@ def gru(
         outputs = _flip(outputs, axis=1)
 
     return last_output, outputs, [h]
+
+
+def bidirectional_gru(
+    inputs,
+    fwd_initial_state,
+    bwd_initial_state,
+    mask,
+    fwd_kernel,
+    fwd_recurrent_kernel,
+    fwd_bias,
+    bwd_kernel,
+    bwd_recurrent_kernel,
+    bwd_bias,
+    activation,
+    recurrent_activation,
+    return_sequences=False,
+    unroll=False,
+    reset_after=True,
+):
+    if mask is not None:
+        raise NotImplementedError
+
+    fwd_out = gru(
+        inputs,
+        fwd_initial_state,
+        None,
+        fwd_kernel,
+        fwd_recurrent_kernel,
+        fwd_bias,
+        activation,
+        recurrent_activation,
+        return_sequences=return_sequences,
+        go_backwards=False,
+        unroll=unroll,
+        reset_after=reset_after,
+    )
+    bwd_out = gru(
+        inputs,
+        bwd_initial_state,
+        None,
+        bwd_kernel,
+        bwd_recurrent_kernel,
+        bwd_bias,
+        activation,
+        recurrent_activation,
+        return_sequences=return_sequences,
+        go_backwards=True,
+        unroll=unroll,
+        reset_after=reset_after,
+    )
+    return fwd_out, bwd_out
 
 
 def unstack(x, axis=0):

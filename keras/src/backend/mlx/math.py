@@ -2,7 +2,6 @@ import math
 
 import mlx.core as mx
 import mlx.core.fft as mx_fft
-import numpy as np
 
 from keras.src.backend import standardize_dtype
 from keras.src.backend.mlx.core import _flip
@@ -15,16 +14,33 @@ def segment_sum(data, segment_ids, num_segments=None, sorted=False):
     if num_segments is None:
         num_segments = int(mx.max(segment_ids).item()) + 1
 
-    # Filter out negative segment_ids
-    valid_mask = segment_ids >= 0
-    valid_data = data[valid_mask]
-    valid_segment_ids = segment_ids[valid_mask]
+    mask = segment_ids >= 0
+    safe_ids = mx.where(mask, segment_ids, 0)
+    mask_b = mx.reshape(mask, [-1] + [1] * (data.ndim - 1))
+    safe_data = mx.where(mask_b, data, mx.array(0, dtype=data.dtype))
 
-    data_shape = list(valid_data.shape)
-    data_shape[0] = num_segments
+    out_shape = list(data.shape)
+    out_shape[0] = num_segments
+    result = mx.zeros(out_shape, dtype=data.dtype)
+    result = result.at[safe_ids].add(safe_data)
+    return result
 
-    result = mx.zeros(data_shape, dtype=valid_data.dtype)
-    result = result.at[valid_segment_ids].add(valid_data)
+
+def segment_prod(data, segment_ids, num_segments=None, sorted=False):
+    data = convert_to_tensor(data)
+    segment_ids = convert_to_tensor(segment_ids)
+    if num_segments is None:
+        num_segments = int(mx.max(segment_ids).item()) + 1
+
+    mask = segment_ids >= 0
+    safe_ids = mx.where(mask, segment_ids, 0)
+    mask_b = mx.reshape(mask, [-1] + [1] * (data.ndim - 1))
+    safe_data = mx.where(mask_b, data, mx.array(1, dtype=data.dtype))
+
+    out_shape = list(data.shape)
+    out_shape[0] = num_segments
+    result = mx.ones(out_shape, dtype=data.dtype)
+    result = result.at[safe_ids].multiply(safe_data)
     return result
 
 
@@ -34,16 +50,33 @@ def segment_max(data, segment_ids, num_segments=None, sorted=False):
     if num_segments is None:
         num_segments = int(mx.max(segment_ids).item()) + 1
 
-    # Filter out negative segment_ids
-    valid_mask = segment_ids >= 0
-    valid_data = data[valid_mask]
-    valid_segment_ids = segment_ids[valid_mask]
+    mask = segment_ids >= 0
+    safe_ids = mx.where(mask, segment_ids, 0)
+    mask_b = mx.reshape(mask, [-1] + [1] * (data.ndim - 1))
+    safe_data = mx.where(mask_b, data, mx.array(-mx.inf, dtype=data.dtype))
 
-    data_shape = list(valid_data.shape)
-    data_shape[0] = num_segments
+    out_shape = list(data.shape)
+    out_shape[0] = num_segments
+    result = mx.full(out_shape, -mx.inf, dtype=data.dtype)
+    result = result.at[safe_ids].maximum(safe_data)
+    return result
 
-    result = mx.full(data_shape, -mx.inf, dtype=valid_data.dtype)
-    result = result.at[valid_segment_ids].maximum(valid_data)
+
+def segment_min(data, segment_ids, num_segments=None, sorted=False):
+    data = convert_to_tensor(data)
+    segment_ids = convert_to_tensor(segment_ids)
+    if num_segments is None:
+        num_segments = int(mx.max(segment_ids).item()) + 1
+
+    mask = segment_ids >= 0
+    safe_ids = mx.where(mask, segment_ids, 0)
+    mask_b = mx.reshape(mask, [-1] + [1] * (data.ndim - 1))
+    safe_data = mx.where(mask_b, data, mx.array(mx.inf, dtype=data.dtype))
+
+    out_shape = list(data.shape)
+    out_shape[0] = num_segments
+    result = mx.full(out_shape, mx.inf, dtype=data.dtype)
+    result = result.at[safe_ids].minimum(safe_data)
     return result
 
 
@@ -79,21 +112,15 @@ def logsumexp(x, axis=None, keepdims=False):
     return mx.logsumexp(x, axis=axis, keepdims=keepdims)
 
 
-def qr(x, mode="reduced"):
+def cdist(x, y):
     x = convert_to_tensor(x)
-    if mode not in {"reduced", "complete"}:
-        raise ValueError(
-            "`mode` argument value not supported. "
-            "Expected one of {'reduced', 'complete'}. "
-            f"Received: mode={mode}"
-        )
-    # MLX's linalg.qr always returns the reduced factorisation.
-    # For "complete" we fall back to numpy.
-    if mode == "complete":
-        x_np = np.array(x)
-        q_np, r_np = np.linalg.qr(x_np, mode="complete")
-        return convert_to_tensor(q_np), convert_to_tensor(r_np)
-    return mx.linalg.qr(x)
+    y = convert_to_tensor(y)
+    if x.ndim < 2 or y.ndim < 2:
+        raise ValueError("`cdist` inputs must have rank >= 2")
+    if x.shape[-1] != y.shape[-1]:
+        raise ValueError("Last dimension of inputs to `cdist` must match")
+    diff = mx.expand_dims(x, -2) - mx.expand_dims(y, -3)
+    return mx.sqrt(mx.sum(diff * diff, axis=-1))
 
 
 def extract_sequences(x, sequence_length, sequence_stride):
@@ -101,9 +128,8 @@ def extract_sequences(x, sequence_length, sequence_stride):
     *batch_shape, signal_length = x.shape
     batch_shape = list(batch_shape)
     num_sequences = (
-        (signal_length - (sequence_length - sequence_stride))
-        // sequence_stride
-    )
+        signal_length - (sequence_length - sequence_stride)
+    ) // sequence_stride
     shape = x.shape[:-1] + (num_sequences, sequence_length)
     strides = x.strides[:-1] + (
         sequence_stride * x.strides[-1],
@@ -229,8 +255,11 @@ def _get_window(window_name, sequence_length, dtype):
         )
     elif window_name == "blackman":
         a = mx.arange(n).astype(mx.float32) / (n - 1)
-        win = (0.42 - 0.5 * mx.cos(2 * 3.141592653589793 * a)
-               + 0.08 * mx.cos(4 * 3.141592653589793 * a))
+        win = (
+            0.42
+            - 0.5 * mx.cos(2 * 3.141592653589793 * a)
+            + 0.08 * mx.cos(4 * 3.141592653589793 * a)
+        )
     elif window_name == "bartlett":
         win = 1.0 - mx.abs(
             2.0 * mx.arange(n).astype(mx.float32) / (n - 1) - 1.0
@@ -244,8 +273,7 @@ def _get_window(window_name, sequence_length, dtype):
 
 
 def stft(
-    x, sequence_length, sequence_stride, fft_length, window="hann",
-    center=True
+    x, sequence_length, sequence_stride, fft_length, window="hann", center=True
 ):
     if standardize_dtype(x.dtype) not in {"float32", "float64"}:
         raise TypeError(
@@ -272,7 +300,7 @@ def stft(
         pad_len = fft_length // 2
         # Reflect: x[..., pad:0:-1] | x | x[..., -2:-2-pad:-1]
         left = x[..., pad_len:0:-1]
-        right = x[..., -2:-2 - pad_len:-1]
+        right = x[..., -2 : -2 - pad_len : -1]
         x = mx.concatenate([left, x, right], axis=-1)
 
     l_pad = (fft_length - sequence_length) // 2
@@ -382,6 +410,11 @@ def rsqrt(x):
 def erf(x):
     x = convert_to_tensor(x)
     return mx.erf(x)
+
+
+def erfc(x):
+    x = convert_to_tensor(x)
+    return 1 - mx.erf(x)
 
 
 def erfinv(x):
