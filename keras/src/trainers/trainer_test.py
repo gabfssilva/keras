@@ -39,6 +39,8 @@ elif backend.backend() == "numpy":
     from keras.src.backend.numpy.trainer import NumpyTrainer as Trainer
 elif backend.backend() == "openvino":
     from keras.src.backend.openvino.trainer import OpenVINOTrainer as Trainer
+elif backend.backend() == "mlx":
+    from keras.src.backend.mlx.trainer import MLXTrainer as Trainer
 else:
     raise ImportError(f"Invalid backend: {backend.backend()}")
 

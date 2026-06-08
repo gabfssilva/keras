@@ -355,6 +355,14 @@ def is_torch_tensor(value):
     return False
 
 
+def is_mlx_array(value):
+    if hasattr(value, "__class__"):
+        for parent in value.__class__.__mro__:
+            if parent.__name__ == "array" and str(parent.__module__) == "mlx.core":
+                return True
+    return False
+
+
 def is_scipy_sparse(x):
     return str(x.__class__.__module__).startswith("scipy.sparse") and hasattr(
         x, "tocoo"

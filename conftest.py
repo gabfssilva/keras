@@ -46,10 +46,18 @@ def pytest_collection_modifyitems(config, items):
             "keras/src/backend/openvino/excluded_concrete_tests.txt", "r"
         ) as file:
             openvino_skipped_tests = file.readlines()
-            # it is necessary to check if stripped line is not empty
-            # and exclude such lines
             openvino_skipped_tests = [
                 line.strip() for line in openvino_skipped_tests if line.strip()
+            ]
+
+    mlx_skipped_tests = []
+    if backend() == "mlx":
+        with open(
+            "keras/src/backend/mlx/excluded_concrete_tests.txt", "r"
+        ) as file:
+            mlx_skipped_tests = file.readlines()
+            mlx_skipped_tests = [
+                line.strip() for line in mlx_skipped_tests if line.strip()
             ]
 
     if backend() == "jax":
@@ -82,6 +90,15 @@ def pytest_collection_modifyitems(config, items):
                     skip_if_backend(
                         "openvino",
                         "Not supported operation by openvino backend",
+                    )
+                )
+
+        for skipped_test in mlx_skipped_tests:
+            if skipped_test in item.nodeid:
+                item.add_marker(
+                    skip_if_backend(
+                        "mlx",
+                        "Not supported operation by mlx backend",
                     )
                 )
 

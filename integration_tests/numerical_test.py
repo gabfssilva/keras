@@ -139,7 +139,7 @@ def numerical_test():
 
 
 if __name__ == "__main__":
-    if keras.backend.backend() == "openvino":
+    if keras.backend.backend() in ("openvino", "mlx"):
         # this test requires trainable backend
         sys.exit(0)
     keras.utils.set_random_seed(1337)
