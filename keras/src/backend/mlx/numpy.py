@@ -122,13 +122,17 @@ def mean(x, axis=None, keepdims=False):
     axis = standardize_axis_for_numpy(axis)
     x = convert_to_tensor(x)
     ori_dtype = standardize_dtype(x.dtype)
+    # Accumulate in float32 to avoid low-precision (e.g. float16) overflow,
+    # then cast back to the original dtype, matching numpy/jax/torch.
+    compute_dtype = dtypes.result_type(x.dtype, "float32")
     if "int" in ori_dtype or ori_dtype == "bool":
-        result_dtype = dtypes.result_type(x.dtype, "float32")
+        result_dtype = compute_dtype
     else:
         result_dtype = ori_dtype
-    return mx.mean(
-        x.astype(_to_mlx_dtype(result_dtype)), axis=axis, keepdims=keepdims
+    output = mx.mean(
+        x.astype(_to_mlx_dtype(compute_dtype)), axis=axis, keepdims=keepdims
     )
+    return output.astype(_to_mlx_dtype(result_dtype))
 
 
 def max(x, axis=None, keepdims=False, initial=None):
@@ -351,6 +355,8 @@ def argmin(x, axis=None, keepdims=False):
 def argsort(x, axis=-1):
     axis = standardize_axis_for_numpy(axis)
     x = convert_to_tensor(x)
+    if x.ndim == 0:
+        return mx.argsort(x, axis=None).astype(mx.int32)
     return mx.argsort(x, axis=axis).astype(mx.int32)
 
 
@@ -666,7 +672,11 @@ def cross(x1, x2, axisa=-1, axisb=-1, axisc=-1, axis=None):
         axisc = axis
     x1 = mx.moveaxis(x1, axisa, -1)
     x2 = mx.moveaxis(x2, axisb, -1)
-    result = mx.linalg.cross(x1, x2)
+    if x1.shape[-1] == 2 and x2.shape[-1] == 2:
+        # numpy returns only the z-component (drops the last dim) when both
+        # input vectors have length 2.
+        return x1[..., 0] * x2[..., 1] - x1[..., 1] * x2[..., 0]
+    result = mx.linalg.cross(x1, x2, axis=-1)
     result = mx.moveaxis(result, -1, axisc)
     return result
 
@@ -934,20 +944,30 @@ def gcd(x1, x2):
 
 
 def geomspace(start, stop, num=50, endpoint=True, dtype=None, axis=0):
-    dtype = dtype or config.floatx()
+    if axis != 0:
+        raise ValueError(
+            "mx.geomspace does not support an `axis` argument. "
+            f"Received axis={axis}"
+        )
+    if dtype is None:
+        dtypes_to_resolve = [
+            getattr(start, "dtype", type(start)),
+            getattr(stop, "dtype", type(stop)),
+            float,
+        ]
+        dtype = dtypes.result_type(*dtypes_to_resolve)
+    mlx_dtype = _to_mlx_dtype(dtype)
+
     start = convert_to_tensor(start, dtype=dtype)
     stop = convert_to_tensor(stop, dtype=dtype)
-    # geomspace: start * ratio^i where ratio = (stop/start)^(1/(num-1))
-    # Equivalent to: start * (stop/start) ^ linspace(0, 1, num)
-    mx.eval(start, stop)
-    log_start = float(mx.log(start))
-    log_stop = float(mx.log(stop))
-    if endpoint:
-        exponents = mx.linspace(log_start, log_stop, num)
-    else:
-        step = (log_stop - log_start) / num
-        exponents = mx.linspace(log_start, log_stop - step, num)
-    return mx.exp(exponents).astype(_to_mlx_dtype(dtype))
+
+    log_start = mx.log10(mx.abs(start))
+    log_stop = mx.log10(mx.abs(stop))
+
+    result = logspace(
+        log_start, log_stop, num=num, endpoint=endpoint, base=10, dtype=dtype
+    )
+    return (result * mx.sign(start)).astype(mlx_dtype)
 
 
 def greater(x1, x2):
@@ -1146,7 +1166,11 @@ def less_equal(x1, x2):
 def linspace(
     start, stop, num=50, endpoint=True, retstep=False, dtype=None, axis=0
 ):
-    axis = standardize_axis_for_numpy(axis)
+    if axis != 0:
+        raise ValueError(
+            "mx.linspace does not support an `axis` argument. "
+            f"Received axis={axis}"
+        )
     if dtype is None:
         dtypes_to_resolve = [
             getattr(start, "dtype", type(start)),
@@ -1154,26 +1178,35 @@ def linspace(
             float,
         ]
         dtype = dtypes.result_type(*dtypes_to_resolve)
-    result = mx.linspace(
-        start, stop, num=num, dtype=_to_mlx_dtype(dtype)
-    )
-    if not endpoint and num > 1:
-        step = (stop - start) / num
-        result = result[:-1]
-        # Recompute with endpoint=False semantics
-        result = mx.linspace(start, stop, num=num + 1, dtype=_to_mlx_dtype(dtype))[:-1]
-    if retstep:
+    mlx_dtype = _to_mlx_dtype(dtype)
+
+    step = float("nan")
+    if endpoint:
         if num > 1:
-            if endpoint:
-                step = (stop - start) / (num - 1)
-            else:
-                step = (stop - start) / num
-        elif num == 1:
-            step = float("nan")
-        else:
-            step = float("nan")
-        return result, step
-    return result
+            step = (stop - start) / (num - 1)
+    else:
+        if num > 0:
+            step = (stop - start) / num
+        if num > 1:
+            stop = stop - ((stop - start) / num)
+
+    if hasattr(start, "__len__") and hasattr(stop, "__len__"):
+        start = convert_to_tensor(start, dtype=dtype)
+        stop = convert_to_tensor(stop, dtype=dtype)
+        steps = mx.arange(num, dtype=mlx_dtype) / (num - 1)
+
+        # reshape `steps` to allow for broadcasting
+        for _ in range(start.ndim):
+            steps = mx.expand_dims(steps, -1)
+
+        # increments from `start` to `stop` in each dimension
+        linspace = start[None] + steps * (stop - start)[None]
+    else:
+        linspace = mx.linspace(start, stop, num=num, dtype=mlx_dtype)
+
+    if retstep:
+        return (linspace, step)
+    return linspace
 
 
 def log(x):
@@ -1258,6 +1291,11 @@ def logical_or(x1, x2):
 
 
 def logspace(start, stop, num=50, endpoint=True, base=10, dtype=None, axis=0):
+    if axis != 0:
+        raise ValueError(
+            "mx.logspace does not support an `axis` argument. "
+            f"Received axis={axis}"
+        )
     if dtype is None:
         dtypes_to_resolve = [
             getattr(start, "dtype", type(start)),
@@ -1265,11 +1303,27 @@ def logspace(start, stop, num=50, endpoint=True, base=10, dtype=None, axis=0):
             float,
         ]
         dtype = dtypes.result_type(*dtypes_to_resolve)
-    # logspace(start, stop) = base^linspace(start, stop)
-    lin = linspace(start, stop, num=num, endpoint=endpoint, dtype=dtype)
-    return mx.power(
-        convert_to_tensor(base, dtype=dtype), lin
-    )
+    mlx_dtype = _to_mlx_dtype(dtype)
+
+    if endpoint is False:
+        stop = stop - ((stop - start) / num)
+    if hasattr(start, "__len__") and hasattr(stop, "__len__"):
+        start = convert_to_tensor(start, dtype=dtype)
+        stop = convert_to_tensor(stop, dtype=dtype)
+        steps = mx.arange(num, dtype=mlx_dtype) / (num - 1)
+
+        # reshape `steps` to allow for broadcasting
+        for _ in range(start.ndim):
+            steps = mx.expand_dims(steps, -1)
+
+        linspace = start[None] + steps * (stop - start)[None]
+        logspace = base**linspace
+    else:
+        linspace = mx.linspace(start, stop, num=num, dtype=mlx_dtype)
+        logspace = mx.power(
+            convert_to_tensor(base, dtype=dtype), linspace
+        ).astype(mlx_dtype)
+    return logspace
 
 
 def maximum(x1, x2):
@@ -1369,15 +1423,10 @@ def fmod(x1, x2):
         dtype = "int32"
     x1 = x1.astype(_to_mlx_dtype(dtype))
     x2 = x2.astype(_to_mlx_dtype(dtype))
-    # fmod: result has the sign of the dividend (C-style remainder)
-    # fmod(x1, x2) = x1 - trunc(x1/x2) * x2
-    dtype_str = standardize_dtype(dtype)
-    if "int" in dtype_str or "uint" in dtype_str:
-        return mx.remainder(x1, x2)
     quotient = x1 / x2
-    # trunc
-    truncated = mx.where(quotient >= 0, mx.floor(quotient), mx.ceil(quotient))
-    return x1 - truncated * x2
+    truncated = mx.sign(quotient) * mx.floor(mx.abs(quotient))
+    result = x1 - truncated * x2
+    return result.astype(_to_mlx_dtype(dtype))
 
 
 def moveaxis(x, source, destination):
@@ -1472,11 +1521,43 @@ def nanmean(x, axis=None, keepdims=False):
 
 def nanmedian(x, axis=None, keepdims=False):
     x = convert_to_tensor(x)
+    if axis == () or axis == []:
+        return x
     dtype = dtypes.result_type(standardize_dtype(x.dtype), float)
-    return nanquantile(
-        x, convert_to_tensor(0.5, dtype=dtype),
-        axis=axis, method="linear", keepdims=keepdims,
+    x = x.astype(_to_mlx_dtype(dtype))
+    nan_mask = mx.isnan(x)
+    reduced = _quantile_reduced_axes(axis, x.ndim)
+    n_valid = mx.sum(
+        (~nan_mask).astype(mx.int32), axis=reduced, keepdims=True
+    ).astype(x.dtype)
+    all_nan = n_valid == 0
+    n_safe = mx.where(all_nan, convert_to_tensor(1, dtype=x.dtype), n_valid)
+    # Replace NaN with +inf so they sort to the end; count of real values
+    # comes from `nan_mask`, not from the sentinel (genuine +inf must remain
+    # a valid value).
+    x_filled = mx.where(
+        nan_mask, convert_to_tensor(float("inf"), dtype=x.dtype), x
     )
+    work, other_shape = _quantile_to_work(x_filled, reduced)
+    n_safe = mx.reshape(n_safe, other_shape + [1])
+    all_nan = mx.reshape(all_nan, other_shape + [1])
+    sorted_x = mx.sort(work, axis=-1)
+    indices = 0.5 * (n_safe - 1)
+
+    def gather(arr, idx):
+        return mx.take_along_axis(arr, idx, axis=-1)
+
+    result = _quantile_interp(sorted_x, indices, "linear", gather)
+    result = mx.where(
+        all_nan, convert_to_tensor(float("nan"), dtype=result.dtype), result
+    )
+    result = mx.squeeze(result, axis=-1)
+    if keepdims:
+        target = [
+            1 if a in reduced else x.shape[a] for a in range(x.ndim)
+        ]
+        result = mx.reshape(result, target)
+    return result
 
 
 def nanmin(x, axis=None, keepdims=False):
@@ -1908,25 +1989,25 @@ def repeat(x, repeats, axis=None):
     x = convert_to_tensor(x)
     if isinstance(repeats, int):
         return mx.repeat(x, repeats, axis=axis)
-    # Array repeats: repeat each element individually, then concatenate
-    repeats = convert_to_tensor(repeats)
-    mx.eval(repeats)
     if axis is None:
         x = mx.flatten(x)
         axis = 0
-    parts = []
-    for i in range(x.shape[axis]):
-        slc = [slice(None)] * x.ndim
-        slc[axis] = i
-        elem = mx.expand_dims(x[tuple(slc)], axis=axis)
-        r = int(repeats[i])
-        if r > 0:
-            parts.append(mx.repeat(elem, r, axis=axis))
-    if not parts:
-        shape = list(x.shape)
-        shape[axis] = 0
-        return mx.zeros(shape, dtype=x.dtype)
-    return mx.concatenate(parts, axis=axis)
+    axis = axis % x.ndim
+    n = x.shape[axis]
+    repeats = convert_to_tensor(repeats, dtype="int32")
+    if repeats.ndim == 0:
+        return mx.repeat(x, int(repeats), axis=axis)
+    if repeats.shape[0] == 1:
+        repeats = mx.broadcast_to(repeats, (n,))
+    # Build gather indices: position j maps to the source index equal to the
+    # number of cumulative repeats not yet exceeding j.
+    total = int(mx.sum(repeats))
+    cumulative = mx.cumsum(repeats)
+    positions = mx.arange(total)
+    indices = mx.sum(
+        (positions[:, None] >= cumulative[None, :]).astype(mx.int32), axis=1
+    )
+    return mx.take(x, indices, axis=axis)
 
 
 def reshape(x, newshape):
@@ -2163,13 +2244,23 @@ def tanh(x):
 
 
 def tensordot(x1, x2, axes=2):
-    axes = tuple(axes) if isinstance(axes, list) else axes
     x1 = convert_to_tensor(x1)
     x2 = convert_to_tensor(x2)
-    dtype = dtypes.result_type(x1.dtype, x2.dtype)
-    x1 = x1.astype(_to_mlx_dtype(dtype))
-    x2 = x2.astype(_to_mlx_dtype(dtype))
-    return mx.tensordot(x1, x2, axes=axes)
+    result_dtype = dtypes.result_type(x1.dtype, x2.dtype)
+    # mx.tensordot is backed by matmul and only supports float types.
+    compute_dtype = dtypes.result_type(result_dtype, float)
+    x1 = x1.astype(_to_mlx_dtype(compute_dtype))
+    x2 = x2.astype(_to_mlx_dtype(compute_dtype))
+    # mx.tensordot accepts an int or a `list[Sequence[int]]`; numpy also
+    # accepts axes=(0, 1) and a pair of sequences as a tuple.
+    if isinstance(axes, (list, tuple)):
+        first, second = axes
+        if not isinstance(first, (list, tuple)):
+            first = (first,)
+        if not isinstance(second, (list, tuple)):
+            second = (second,)
+        axes = [list(first), list(second)]
+    return mx.tensordot(x1, x2, axes=axes).astype(_to_mlx_dtype(result_dtype))
 
 
 def round(x, decimals=0):
@@ -2731,9 +2822,25 @@ def select(condlist, choicelist, default=0):
 def slogdet(x):
     x = convert_to_tensor(x)
     dtype = standardize_dtype(x.dtype)
-    # LU factorization to compute slogdet
-    lu, pivots = mx.linalg.lu_factor(x, stream=mx.cpu)
+    out_dtype = _to_mlx_dtype(dtype)
     n = x.shape[-1]
+    # `mx.linalg.lu_factor` aborts the process (uncatchable C++ exception) on a
+    # singular matrix, so detect singularity first via SVD (which does not
+    # abort). Singular matrices are replaced with the identity before
+    # `lu_factor` and their results overwritten with sign=0, logabsdet=-inf,
+    # matching np.linalg.slogdet.
+    s = mx.linalg.svd(x, compute_uv=False, stream=mx.cpu)
+    s_max = mx.max(s, axis=-1)
+    s_min = mx.min(s, axis=-1)
+    tol = s_max * n * mx.finfo(x.dtype).eps
+    singular = s_min <= tol
+    eye = mx.eye(n, dtype=x.dtype)
+    if x.ndim > 2:
+        mask = singular.reshape(singular.shape + (1, 1))
+    else:
+        mask = singular.reshape((1, 1))
+    x_safe = mx.where(mask, eye, x)
+    lu, pivots = mx.linalg.lu_factor(x_safe, stream=mx.cpu)
     # Diagonal of LU gives the product for the determinant
     diag = mx.diagonal(lu, axis1=-2, axis2=-1)
     log_abs_det = mx.sum(mx.log(mx.abs(diag)), axis=-1)
@@ -2742,9 +2849,12 @@ def slogdet(x):
     # Count permutation parity from pivots
     idx = mx.arange(n, dtype=pivots.dtype)
     n_swaps = mx.sum((pivots != idx).astype(mx.int32), axis=-1)
-    parity = mx.where(n_swaps % 2 == 0, 1.0, -1.0).astype(_to_mlx_dtype(dtype))
-    sign = (sign_diag * parity).astype(_to_mlx_dtype(dtype))
-    return sign, log_abs_det.astype(_to_mlx_dtype(dtype))
+    parity = mx.where(n_swaps % 2 == 0, 1.0, -1.0)
+    sign = sign_diag * parity
+    sign = mx.where(singular, mx.zeros_like(sign), sign)
+    neg_inf = mx.full(log_abs_det.shape, -mx.inf, dtype=log_abs_det.dtype)
+    log_abs_det = mx.where(singular, neg_inf, log_abs_det)
+    return sign.astype(out_dtype), log_abs_det.astype(out_dtype)
 
 
 def argpartition(x, kth, axis=-1):

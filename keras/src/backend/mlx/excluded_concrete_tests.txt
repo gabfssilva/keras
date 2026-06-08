@@ -268,3 +268,6 @@ keras/src/trainers/trainer_test.py::TestTrainer::test_steps_per_execution_steps_
 keras/src/trainers/trainer_test.py::TestTrainer::test_steps_per_execution_steps_per_epoch_unknown_data_size_not_match_but_high_enough_jit
 keras/src/trainers/trainer_test.py::TestTrainer::test_steps_per_execution_steps_per_epoch_unknown_data_size_not_match_but_high_enough_non_jit
 keras/src/ops/core_test.py::CoreOpsCorrectnessTest::test_stop_gradient
+keras/src/ops/numpy_test.py::NumpyOneInputOpsDynamicShapeTest::test_argmax_negative_zero
+keras/src/ops/numpy_test.py::NumpyOneInputOpsDynamicShapeTest::test_argmin_negative_zero
+keras/src/ops/numpy_test.py::NumpyOneInputOpsCorrectnessTest::test_expm1
