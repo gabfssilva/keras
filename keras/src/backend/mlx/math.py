@@ -4,7 +4,6 @@ import mlx.core as mx
 import mlx.core.fft as mx_fft
 
 from keras.src.backend import standardize_dtype
-from keras.src.backend.mlx.core import _flip
 from keras.src.backend.mlx.core import convert_to_tensor
 
 
@@ -84,8 +83,8 @@ def top_k(x, k, sorted=True):
     x = convert_to_tensor(x)
     if sorted:
         sorted_indices = mx.argsort(x, axis=-1)
-        # Reverse to get descending order
-        sorted_indices = _flip(sorted_indices, axis=-1)
+        # Reverse along the last axis to get descending order
+        sorted_indices = sorted_indices[..., ::-1]
         sorted_values = mx.take_along_axis(x, sorted_indices, axis=-1)
         top_k_values = sorted_values[..., :k]
         top_k_indices = sorted_indices[..., :k]
@@ -130,11 +129,19 @@ def extract_sequences(x, sequence_length, sequence_stride):
     num_sequences = (
         signal_length - (sequence_length - sequence_stride)
     ) // sequence_stride
+    # mlx arrays expose no byte `.strides`; `mx.as_strided` takes strides in
+    # elements. Compute element strides for the row-contiguous array.
+    elem_strides = []
+    acc = 1
+    for d in reversed(x.shape):
+        elem_strides.append(acc)
+        acc *= d
+    elem_strides = list(reversed(elem_strides))
     shape = x.shape[:-1] + (num_sequences, sequence_length)
-    strides = x.strides[:-1] + (
-        sequence_stride * x.strides[-1],
-        x.strides[-1],
-    )
+    strides = elem_strides[:-1] + [
+        sequence_stride * elem_strides[-1],
+        elem_strides[-1],
+    ]
     x = mx.as_strided(x, shape=shape, strides=strides)
     return mx.reshape(x, (*batch_shape, *x.shape[-2:]))
 
@@ -323,12 +330,10 @@ def stft(
     # Apply window: sequences has shape (..., num_sequences, fft_length)
     sequences = sequences * win
 
-    # Apply rfft along last axis
+    # Raw windowed rfft. The reference (scipy.signal.stft) applies an internal
+    # `spectrum` normalization that is cancelled by its own
+    # `/sqrt(1/win.sum()**2)` scaling, so no extra scaling is applied here.
     complex_output = mx_fft.rfft(sequences, n=fft_length, axis=-1)
-
-    # Scale
-    scale = mx.sqrt(1.0 / mx.sum(win) ** 2)
-    complex_output = complex_output / scale
 
     return (
         mx.real(complex_output).astype(ori_dtype),
@@ -385,8 +390,8 @@ def istft(
         denom = mx.reshape(denom, (overlaps * sequence_stride,))
         win = win / denom[:_sequence_length]
         x = x * win
-    else:
-        x = x / sequence_stride
+    # When `window is None`, the test reference applies no scaling, so leave `x`
+    # unmodified (the previous `x / sequence_stride` was spurious).
 
     x = _overlap_sequences(x, sequence_stride)
 
@@ -422,6 +427,8 @@ def erfinv(x):
 
 def logdet(x):
     x = convert_to_tensor(x)
-    # Use slogdet for numerical stability
-    sign, logabsdet = mx.linalg.slogdet(x)
-    return logabsdet
+    # mlx 0.31.2 has no `mx.linalg.slogdet`; reuse the LU-based slogdet from the
+    # numpy backend (CPU-stream `lu_factor` with SVD singularity guarding).
+    from keras.src.backend.mlx.numpy import slogdet
+
+    return slogdet(x)[1]
