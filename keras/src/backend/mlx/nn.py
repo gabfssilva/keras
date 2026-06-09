@@ -1029,13 +1029,15 @@ def conv_transpose(
         perm = (0,) + tuple(range(2, 2 + num_spatial_dims)) + (1,)
         inputs = mx.transpose(inputs, perm)
 
-    # Transpose kernel from Keras format to MLX format
-    # Keras kernel: (*spatial, in_ch, out_ch) where in_ch matches input channels
-    # MLX conv_general expects: (C_out, *spatial, C_in) where C_in matches input
-    # For transposed conv: we want output with out_ch channels, so:
-    #   C_out = out_ch (Keras), C_in = in_ch (Keras, matches input channels)
-    # Transpose: (out_ch_axis, *spatial_axes, in_ch_axis)
-    mlx_kernel = _transpose_kernel_to_mlx(kernel, num_spatial_dims)
+    # The conv_transpose Keras kernel is (*spatial, out_ch, in_ch): the last
+    # two axes are swapped relative to the forward conv. Map out_ch (the
+    # second-to-last axis) and in_ch (the last axis) into the MLX
+    # (out_ch, *spatial, in_ch) layout so C_in matches the input channels.
+    ndim = kernel.ndim
+    mlx_kernel = mx.transpose(
+        kernel,
+        (ndim - 2,) + tuple(range(num_spatial_dims)) + (ndim - 1,),
+    )
 
     # Use conv_general with input_dilation for transposed convolution
     # padding_values is a list of (left_pad, right_pad) tuples

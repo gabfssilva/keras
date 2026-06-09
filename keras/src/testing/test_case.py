@@ -60,9 +60,9 @@ class TestCase(parameterized.TestCase):
         Given two array-like objects, check that their shapes and all elements
         are equal up to given tolerances.
         """
-        if tpu_atol is not None and uses_tpu():
+        if tpu_atol is not None and (uses_tpu() or uses_mlx()):
             atol = tpu_atol
-        if tpu_rtol is not None and uses_tpu():
+        if tpu_rtol is not None and (uses_tpu() or uses_mlx()):
             rtol = tpu_rtol
         actual = self.convert_to_numpy(actual)
         desired = self.convert_to_numpy(desired)
@@ -88,7 +88,7 @@ class TestCase(parameterized.TestCase):
         Given two array-like objects, check that their shapes and all elements
         are equal up to given decimal places.
         """
-        if tpu_decimal is not None and uses_tpu():
+        if tpu_decimal is not None and (uses_tpu() or uses_mlx()):
             decimal = tpu_decimal
         msg = msg or ""
         actual = self.convert_to_numpy(actual)
@@ -688,6 +688,12 @@ def uses_tpu():
         else:
             uses_tpu._value = False
     return uses_tpu._value
+
+
+def uses_mlx():
+    # The MLX backend runs on Metal, whose float32 matmul/conv accumulation has
+    # reduced precision (like a TPU), so it reuses the tpu_* tolerances.
+    return backend.backend() == "mlx"
 
 
 def jax_uses_gpu():

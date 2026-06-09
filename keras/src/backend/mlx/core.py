@@ -452,11 +452,9 @@ def slice(inputs, start_indices, shape):
 def slice_update(inputs, start_indices, updates):
     inputs = convert_to_tensor(inputs)
     updates = convert_to_tensor(updates)
-    slices = tuple(
-        builtins.slice(int(s), int(s) + updates.shape[i])
-        for i, s in enumerate(start_indices)
-    )
-    return inputs.at[slices].add(updates - inputs[slices])
+    start = mx.array([int(s) for s in start_indices], dtype=mx.int32)
+    axes = list(range(len(start_indices)))
+    return mx.slice_update(inputs, updates, start, axes)
 
 
 def switch(index, branches, *operands):

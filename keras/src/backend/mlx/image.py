@@ -2,6 +2,7 @@ import ml_dtypes
 import mlx.core as mx
 
 from keras.src import backend
+from keras.src.backend.mlx.core import _to_mlx_dtype
 from keras.src.backend.mlx.core import convert_to_tensor
 from keras.src.random.seed_generator import draw_seed
 
@@ -52,13 +53,20 @@ def rgb_to_grayscale(images, data_format=None):
             "or rank 4 (batch of images). Received input with shape: "
             f"images.shape={images.shape}"
         )
+    channels = images.shape[channels_axis]
+    if channels not in (1, 3):
+        raise ValueError(
+            "Invalid channel size: expected 3 (RGB) or 1 (Grayscale). "
+            f"Received input with shape: images.shape={images.shape}"
+        )
+    if channels == 1:
+        return images
     original_dtype = images.dtype
-    compute_dtype = backend.result_type(images.dtype, float)
     images = images.astype(mx.float32)
 
     rgb_weights = mx.array([0.2989, 0.5870, 0.1140], dtype=mx.float32)
     # tensordot along the channel axis
-    grayscales = mx.tensordot(images, rgb_weights, axes=(channels_axis, -1))
+    grayscales = mx.tensordot(images, rgb_weights, axes=[[channels_axis], [-1]])
     grayscales = mx.expand_dims(grayscales, axis=channels_axis)
     return grayscales.astype(original_dtype)
 
@@ -162,6 +170,7 @@ def resize(
     fill_value=0.0,
     data_format=None,
 ):
+    images = convert_to_tensor(images)
     data_format = backend.standardize_data_format(data_format)
     if interpolation not in RESIZE_INTERPOLATIONS:
         raise ValueError(
@@ -987,7 +996,7 @@ def compute_homography_matrix(start_points, end_points):
         coefficient_matrix, target_vector, stream=mx.cpu
     )
     homography_matrix = mx.reshape(homography_matrix, [-1, 8])
-    return homography_matrix.astype(compute_dtype)
+    return homography_matrix.astype(_to_mlx_dtype(compute_dtype))
 
 
 # ---------------------------------------------------------------------------
@@ -1028,8 +1037,8 @@ def map_coordinates(
     ndim = len(inputs.shape)
     input_dtype = backend.standardize_dtype(inputs.dtype)
     compute_dtype = backend.result_type(input_dtype, "float32")
-    inputs = inputs.astype(compute_dtype)
-    coordinates = coordinates.astype(compute_dtype)
+    inputs = inputs.astype(_to_mlx_dtype(compute_dtype))
+    coordinates = coordinates.astype(_to_mlx_dtype(compute_dtype))
 
     def _apply_fill_mode(coord, size):
         if fill_mode == "constant":
@@ -1082,7 +1091,9 @@ def map_coordinates(
                     mask, mx.logical_and(idx >= 0, idx < inputs.shape[i])
                 )
             result = mx.where(
-                mask, result, mx.array(fill_value, dtype=compute_dtype)
+                mask,
+                result,
+                mx.array(fill_value, dtype=_to_mlx_dtype(compute_dtype)),
             )
     else:
         # Bilinear interpolation
@@ -1101,82 +1112,43 @@ def map_coordinates(
             def safe_idx(c, size):
                 return _apply_fill_mode(c, size)
 
-        if ndim == 2:
-            y0 = safe_idx(coords_floor[0], inputs.shape[0])
-            y1 = safe_idx(coords_ceil[0], inputs.shape[0])
-            x0 = safe_idx(coords_floor[1], inputs.shape[1])
-            x1 = safe_idx(coords_ceil[1], inputs.shape[1])
-            fy, fx = fracs[0], fracs[1]
+        # Generic n-linear interpolation over the 2**ndim corners.
+        lower = [
+            safe_idx(coords_floor[i], inputs.shape[i]) for i in range(ndim)
+        ]
+        upper = [
+            safe_idx(coords_ceil[i], inputs.shape[i]) for i in range(ndim)
+        ]
 
-            v00 = inputs[y0, x0]
-            v01 = inputs[y0, x1]
-            v10 = inputs[y1, x0]
-            v11 = inputs[y1, x1]
+        result = None
+        for corner in range(2**ndim):
+            indices = []
+            weight = None
+            for i in range(ndim):
+                take_upper = (corner >> i) & 1
+                indices.append(upper[i] if take_upper else lower[i])
+                axis_weight = fracs[i] if take_upper else (1 - fracs[i])
+                weight = axis_weight if weight is None else weight * axis_weight
+            contribution = inputs[tuple(indices)] * weight
+            result = contribution if result is None else result + contribution
 
-            result = (
-                v00 * (1 - fy) * (1 - fx)
-                + v01 * (1 - fy) * fx
-                + v10 * fy * (1 - fx)
-                + v11 * fy * fx
+        if fill_mode == "constant":
+            mask = mx.ones(coordinates.shape[1:], dtype=mx.bool_)
+            for i in range(ndim):
+                mask = mask & (
+                    (coords_floor[i] >= 0) & (coords_ceil[i] < inputs.shape[i])
+                )
+            result = mx.where(
+                mask,
+                result,
+                mx.array(fill_value, dtype=_to_mlx_dtype(compute_dtype)),
             )
 
-            if fill_mode == "constant":
-                mask = (
-                    (coords_floor[0] >= 0)
-                    & (coords_ceil[0] < inputs.shape[0])
-                    & (coords_floor[1] >= 0)
-                    & (coords_ceil[1] < inputs.shape[1])
-                )
-                result = mx.where(
-                    mask, result, mx.array(fill_value, dtype=compute_dtype)
-                )
-        elif ndim == 3:
-            z0 = safe_idx(coords_floor[0], inputs.shape[0])
-            z1 = safe_idx(coords_ceil[0], inputs.shape[0])
-            y0 = safe_idx(coords_floor[1], inputs.shape[1])
-            y1 = safe_idx(coords_ceil[1], inputs.shape[1])
-            x0 = safe_idx(coords_floor[2], inputs.shape[2])
-            x1 = safe_idx(coords_ceil[2], inputs.shape[2])
-            fz, fy, fx = fracs[0], fracs[1], fracs[2]
-
-            v000 = inputs[z0, y0, x0]
-            v001 = inputs[z0, y0, x1]
-            v010 = inputs[z0, y1, x0]
-            v011 = inputs[z0, y1, x1]
-            v100 = inputs[z1, y0, x0]
-            v101 = inputs[z1, y0, x1]
-            v110 = inputs[z1, y1, x0]
-            v111 = inputs[z1, y1, x1]
-
-            result = (
-                v000 * (1 - fz) * (1 - fy) * (1 - fx)
-                + v001 * (1 - fz) * (1 - fy) * fx
-                + v010 * (1 - fz) * fy * (1 - fx)
-                + v011 * (1 - fz) * fy * fx
-                + v100 * fz * (1 - fy) * (1 - fx)
-                + v101 * fz * (1 - fy) * fx
-                + v110 * fz * fy * (1 - fx)
-                + v111 * fz * fy * fx
-            )
-
-            if fill_mode == "constant":
-                mask = (
-                    (coords_floor[0] >= 0)
-                    & (coords_ceil[0] < inputs.shape[0])
-                    & (coords_floor[1] >= 0)
-                    & (coords_ceil[1] < inputs.shape[1])
-                    & (coords_floor[2] >= 0)
-                    & (coords_ceil[2] < inputs.shape[2])
-                )
-                result = mx.where(
-                    mask, result, mx.array(fill_value, dtype=compute_dtype)
-                )
-        else:
-            raise ValueError(
-                f"map_coordinates only supports 2D and 3D inputs, got {ndim}D"
-            )
-
-    return result.astype(input_dtype)
+    if "int" in input_dtype:
+        # Match scipy/jax: round float results to the nearest integer
+        # (half away from zero) before casting to an integer output dtype.
+        result = mx.floor(result + 0.5)
+    return result.astype(_to_mlx_dtype(input_dtype))
 
 
 # ---------------------------------------------------------------------------
