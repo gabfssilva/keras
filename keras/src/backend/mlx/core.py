@@ -34,7 +34,7 @@ def _flip(x, axis=None):
 
 SUPPORTS_SPARSE_TENSORS = False
 SUPPORTS_RAGGED_TENSORS = False
-SUPPORTS_COMPLEX_DTYPES = False
+SUPPORTS_COMPLEX_DTYPES = True
 IS_THREAD_SAFE = False
 
 MLX_DTYPES = {
@@ -52,14 +52,17 @@ MLX_DTYPES = {
     "uint64": mx.uint64,
     "bool": mx.bool_,
     "complex64": mx.complex64,
+    "complex128": mx.complex64,  # MLX has no complex128, downcast
 }
 
 
 _FLOAT64_WARNING_ISSUED = False
+_COMPLEX128_WARNING_ISSUED = False
 
 
 def _to_mlx_dtype(dtype):
     global _FLOAT64_WARNING_ISSUED
+    global _COMPLEX128_WARNING_ISSUED
     dtype = standardize_dtype(dtype)
     if dtype == "float64" and not _FLOAT64_WARNING_ISSUED:
         _FLOAT64_WARNING_ISSUED = True
@@ -69,6 +72,14 @@ def _to_mlx_dtype(dtype):
             "on 64-bit precision (e.g. numerical gradients, large "
             "reductions). Set your default dtype to float32 to "
             "silence this warning.",
+            stacklevel=3,
+        )
+    if dtype == "complex128" and not _COMPLEX128_WARNING_ISSUED:
+        _COMPLEX128_WARNING_ISSUED = True
+        warnings.warn(
+            "MLX does not support complex128. Downcasting to complex64. "
+            "This may cause precision loss in operations that depend on "
+            "128-bit complex precision.",
             stacklevel=3,
         )
     if dtype in MLX_DTYPES:

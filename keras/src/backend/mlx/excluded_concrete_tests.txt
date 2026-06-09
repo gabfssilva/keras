@@ -115,12 +115,6 @@ keras/src/ops/nn_test.py::NNOpsDtypeTest::test_ctc_decode_float32
 keras/src/ops/nn_test.py::NNOpsDtypeTest::test_ctc_loss_bfloat16
 keras/src/ops/nn_test.py::NNOpsDtypeTest::test_ctc_loss_float16
 keras/src/ops/nn_test.py::NNOpsDtypeTest::test_ctc_loss_float32
-keras/src/trainers/trainer_test.py::TestTrainer::test_fit_flow_eager
-keras/src/trainers/trainer_test.py::TestTrainer::test_fit_flow_graph_fn
-keras/src/trainers/trainer_test.py::TestTrainer::test_fit_flow_jit
-keras/src/trainers/trainer_test.py::TestTrainer::test_fit_flow_steps_per_epoch_eager
-keras/src/trainers/trainer_test.py::TestTrainer::test_fit_flow_steps_per_epoch_graph_fn
-keras/src/trainers/trainer_test.py::TestTrainer::test_fit_flow_steps_per_epoch_jit
 keras/src/trainers/trainer_test.py::TestTrainer::test_fit_with_data_adapter_grain_dataloader
 keras/src/trainers/trainer_test.py::TestTrainer::test_fit_with_data_adapter_grain_datast
 keras/src/trainers/trainer_test.py::TestTrainer::test_fit_with_data_adapter_grain_datast_with_len

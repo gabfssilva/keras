@@ -533,6 +533,9 @@ class TestTrainer(testing.TestCase):
             history["mean_squared_error"],
             [14.5, 11.5, 8.5],
             atol=1.0,  # TODO: results vary across backends
+            # TPU and MLX run float32 on reduced-precision hardware (XLA/Metal),
+            # so the accumulated training drifts a bit more.
+            tpu_atol=2.0,
         )
 
     @parameterized.named_parameters(
