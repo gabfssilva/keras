@@ -247,23 +247,21 @@ def _get_window(window_name, sequence_length, dtype):
     n = int(sequence_length)
     if window_name == "hann":
         win = 0.5 - 0.5 * mx.cos(
-            2 * 3.141592653589793 * mx.arange(n).astype(mx.float32) / (n - 1)
+            2 * 3.141592653589793 * mx.arange(n).astype(mx.float32) / n
         )
     elif window_name == "hamming":
         win = 0.54 - 0.46 * mx.cos(
-            2 * 3.141592653589793 * mx.arange(n).astype(mx.float32) / (n - 1)
+            2 * 3.141592653589793 * mx.arange(n).astype(mx.float32) / n
         )
     elif window_name == "blackman":
-        a = mx.arange(n).astype(mx.float32) / (n - 1)
+        a = mx.arange(n).astype(mx.float32) / n
         win = (
             0.42
             - 0.5 * mx.cos(2 * 3.141592653589793 * a)
             + 0.08 * mx.cos(4 * 3.141592653589793 * a)
         )
     elif window_name == "bartlett":
-        win = 1.0 - mx.abs(
-            2.0 * mx.arange(n).astype(mx.float32) / (n - 1) - 1.0
-        )
+        win = 1.0 - mx.abs(2.0 * mx.arange(n).astype(mx.float32) / n - 1.0)
     else:
         raise ValueError(
             f"Unsupported window type: {window_name}. "

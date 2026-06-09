@@ -61,13 +61,16 @@ def einsum(subscripts, *operands, **kwargs):
         set(standardize_dtype(x.dtype) for x in operands)
     )
     if len(dtypes_to_resolve) == 1 and dtypes_to_resolve[0] == "int8":
-        compute_dtype = "int32"
         result_dtype = "int32"
     else:
         result_dtype = dtypes.result_type(*dtypes_to_resolve)
-        compute_dtype = result_dtype
-        if compute_dtype == "bfloat16":
-            compute_dtype = "float32"
+    compute_dtype = result_dtype
+    # mx.einsum is backed by matmul and only supports float types; for
+    # bfloat16 and integer/bool result dtypes compute in float32.
+    if compute_dtype == "bfloat16" or "int" in compute_dtype or (
+        compute_dtype == "bool"
+    ):
+        compute_dtype = "float32"
     operands = tree.map_structure(
         lambda x: x.astype(_to_mlx_dtype(compute_dtype)), operands
     )
@@ -99,9 +102,12 @@ def matmul(x1, x2):
         dtype = "int32"
     else:
         dtype = dtypes.result_type(x1.dtype, x2.dtype)
-    x1 = x1.astype(_to_mlx_dtype(dtype))
-    x2 = x2.astype(_to_mlx_dtype(dtype))
-    return mx.matmul(x1, x2)
+    # mx.matmul only supports float types; for integer/bool result dtypes
+    # compute in float and cast the result back.
+    compute_dtype = dtypes.result_type(dtype, float)
+    x1 = x1.astype(_to_mlx_dtype(compute_dtype))
+    x2 = x2.astype(_to_mlx_dtype(compute_dtype))
+    return mx.matmul(x1, x2).astype(_to_mlx_dtype(dtype))
 
 
 def multiply(x1, x2):
@@ -798,18 +804,25 @@ def dot(x1, x2):
     x1 = convert_to_tensor(x1)
     x2 = convert_to_tensor(x2)
     dtype = dtypes.result_type(x1.dtype, x2.dtype)
-    x1 = x1.astype(_to_mlx_dtype(dtype))
-    x2 = x2.astype(_to_mlx_dtype(dtype))
     if x1.ndim == 0 or x2.ndim == 0:
+        x1 = x1.astype(_to_mlx_dtype(dtype))
+        x2 = x2.astype(_to_mlx_dtype(dtype))
         return x1 * x2
+    # mx.inner/mx.matmul/mx.tensordot only support float types; for
+    # integer/bool result dtypes compute in float and cast back.
+    compute_dtype = dtypes.result_type(dtype, float)
+    x1 = x1.astype(_to_mlx_dtype(compute_dtype))
+    x2 = x2.astype(_to_mlx_dtype(compute_dtype))
     if x1.ndim == 1 and x2.ndim == 1:
-        return mx.inner(x1, x2)
-    if x2.ndim == 1:
-        return mx.tensordot(x1, x2, axes=1)
-    if x1.ndim == 2 and x2.ndim == 2:
-        return mx.matmul(x1, x2)
-    # General nD case: sum over last axis of x1 and second-to-last of x2
-    return mx.tensordot(x1, x2, axes=([-1], [-2]))
+        result = mx.inner(x1, x2)
+    elif x2.ndim == 1:
+        result = mx.tensordot(x1, x2, axes=1)
+    elif x1.ndim == 2 and x2.ndim == 2:
+        result = mx.matmul(x1, x2)
+    else:
+        # General nD case: sum over last axis of x1 and second-to-last of x2
+        result = mx.tensordot(x1, x2, axes=([-1], [-2]))
+    return result.astype(_to_mlx_dtype(dtype))
 
 
 def dstack(xs):
@@ -923,6 +936,9 @@ def full_like(x, fill_value, dtype=None):
     x = convert_to_tensor(x)
     if dtype is None:
         dtype = standardize_dtype(x.dtype)
+    # Pass a typed fill value (like full() does) so mlx honors the dtype;
+    # a raw Python int would make mlx infer int32 and drop a bool dtype.
+    fill_value = convert_to_tensor(fill_value, dtype=dtype)
     return mx.full(x.shape, fill_value, dtype=_to_mlx_dtype(dtype))
 
 
@@ -1499,6 +1515,10 @@ def nancumprod(x, axis=None, dtype=None):
 
 def nanmax(x, axis=None, keepdims=False):
     x = convert_to_tensor(x)
+    # Integer/bool inputs can never contain NaN; the inf sentinel below would
+    # OverflowError when cast to an integer dtype, so short-circuit to mx.max.
+    if x.dtype not in (mx.float16, mx.bfloat16, mx.float32):
+        return mx.max(x, axis=axis, keepdims=keepdims)
     all_nan = mx.all(mx.isnan(x), axis=axis, keepdims=keepdims)
     x_filled = mx.where(mx.isnan(x), convert_to_tensor(float("-inf"), dtype=x.dtype), x)
     result = mx.max(x_filled, axis=axis, keepdims=keepdims)
@@ -1562,6 +1582,10 @@ def nanmedian(x, axis=None, keepdims=False):
 
 def nanmin(x, axis=None, keepdims=False):
     x = convert_to_tensor(x)
+    # Integer/bool inputs can never contain NaN; the inf sentinel below would
+    # OverflowError when cast to an integer dtype, so short-circuit to mx.min.
+    if x.dtype not in (mx.float16, mx.bfloat16, mx.float32):
+        return mx.min(x, axis=axis, keepdims=keepdims)
     all_nan = mx.all(mx.isnan(x), axis=axis, keepdims=keepdims)
     x_filled = mx.where(mx.isnan(x), convert_to_tensor(float("inf"), dtype=x.dtype), x)
     result = mx.min(x_filled, axis=axis, keepdims=keepdims)
@@ -1695,6 +1719,10 @@ def ndim(x):
 
 def nonzero(x):
     x = convert_to_tensor(x)
+    # numpy has no bfloat16 dtype, so np.array() on a bfloat16 mlx array
+    # raises; cast to float32 for the index computation (indices are integers).
+    if x.dtype == mx.bfloat16:
+        x = x.astype(mx.float32)
     # Need mx.eval for data-dependent shapes
     mx.eval(x)
     result = np.nonzero(np.array(x))
@@ -2318,9 +2346,12 @@ def vdot(x1, x2):
     x1 = convert_to_tensor(x1)
     x2 = convert_to_tensor(x2)
     dtype = dtypes.result_type(x1.dtype, x2.dtype)
-    x1 = mx.flatten(x1).astype(_to_mlx_dtype(dtype))
-    x2 = mx.flatten(x2).astype(_to_mlx_dtype(dtype))
-    return mx.inner(x1, x2)
+    # mx.inner only supports float types; for integer/bool result dtypes
+    # compute in float and cast back.
+    compute_dtype = dtypes.result_type(dtype, float)
+    x1 = mx.flatten(x1).astype(_to_mlx_dtype(compute_dtype))
+    x2 = mx.flatten(x2).astype(_to_mlx_dtype(compute_dtype))
+    return mx.inner(x1, x2).astype(_to_mlx_dtype(dtype))
 
 
 def unique(
@@ -2502,9 +2533,12 @@ def inner(x1, x2):
     x1 = convert_to_tensor(x1)
     x2 = convert_to_tensor(x2)
     dtype = dtypes.result_type(x1.dtype, x2.dtype)
-    x1 = x1.astype(_to_mlx_dtype(dtype))
-    x2 = x2.astype(_to_mlx_dtype(dtype))
-    return mx.inner(x1, x2)
+    # mx.inner only supports float types; for integer/bool result dtypes
+    # compute in float and cast back.
+    compute_dtype = dtypes.result_type(dtype, float)
+    x1 = x1.astype(_to_mlx_dtype(compute_dtype))
+    x2 = x2.astype(_to_mlx_dtype(compute_dtype))
+    return mx.inner(x1, x2).astype(_to_mlx_dtype(dtype))
 
 
 def vstack(xs):
@@ -2744,6 +2778,20 @@ def sum(x, axis=None, keepdims=False):
 
 
 def eye(N, M=None, k=0, dtype=None):
+    # The ops-layer float guard misses mlx float tensors because mlx Dtype
+    # objects don't compare equal to their string names; standardize_dtype
+    # does, so re-check here.
+    for name, v in (("N", N), ("M", M)):
+        v_dtype = getattr(v, "dtype", None)
+        if (
+            v is not None
+            and not isinstance(v, int)
+            and v_dtype is not None
+            and standardize_dtype(v_dtype) in dtypes.FLOAT_TYPES
+        ):
+            raise TypeError(
+                f"Argument `{name}` must be an integer or an integer tensor."
+            )
     dtype = dtype or config.floatx()
     return mx.eye(N, m=M, k=k, dtype=_to_mlx_dtype(dtype))
 
