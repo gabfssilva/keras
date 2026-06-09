@@ -1,11 +1,11 @@
-name: MLX Tests
+name: MLX Metal Tests (macOS)
 
+# Metal / Apple Silicon coverage for the MLX backend. CPU coverage already runs
+# in actions.yml alongside the other backends; this job covers the Metal GPU.
+# Disabled by default (manual dispatch only) — to enable on CI, add the usual
+# push/pull_request triggers below.
 on:
-  push:
-    branches: [ master ]
-  pull_request:
-  release:
-    types: [created]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -16,8 +16,8 @@ concurrency:
 
 jobs:
   build:
-    name: Run tests (3.11, mlx)
-    runs-on: ubuntu-latest
+    name: Run tests (3.11, mlx, metal)
+    runs-on: macos-14
     env:
       PYTHON: '3.11'
       KERAS_HOME: .github/workflows/config/mlx
@@ -40,13 +40,16 @@ jobs:
         uses: actions/cache@v5
         with:
           path: ${{ steps.pip-cache.outputs.dir }}
-          key: ${{ runner.os }}-pip-${{ hashFiles('pyproject.toml') }}-${{ hashFiles('requirements.txt') }}
+          key: ${{ runner.os }}-pip-${{ hashFiles('pyproject.toml') }}-${{ hashFiles('requirements-mlx-metal.txt') }}
 
       - name: Install dependencies
         run: |
-          pip install -r requirements.txt --progress-bar off --upgrade
+          pip install -r requirements-mlx-metal.txt --progress-bar off --upgrade
           pip uninstall -y keras keras-nightly
           pip install -e "." --progress-bar off --upgrade
+
+      - name: Verify Metal device
+        run: python -c "import mlx.core as mx; print('MLX device:', mx.default_device()); assert mx.metal.is_available()"
 
       - name: Test integrations
         run: |
@@ -61,7 +64,7 @@ jobs:
         uses: codecov/codecov-action@57e3a136b779b570ffcdbf80b3bdc90e7fab3de2 # v5
         with:
           env_vars: PYTHON,KERAS_HOME
-          flags: keras,keras-mlx
+          flags: keras,keras-mlx,keras-metal
           files: core-coverage.xml
           token: ${{ secrets.CODECOV_TOKEN }}
           fail_ci_if_error: false

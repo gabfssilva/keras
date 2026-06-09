@@ -1,0 +1,15 @@
+# Tensorflow cpu-only version (needed for testing).
+tensorflow-cpu;sys_platform != 'darwin'
+tensorflow;sys_platform == 'darwin'
+
+# Torch cpu-only version (needed for testing).
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch
+
+# Jax cpu-only version (needed for testing).
+jax[cpu]
+
+# MLX with Metal support (Apple Silicon).
+mlx
+
+-r requirements-common.txt

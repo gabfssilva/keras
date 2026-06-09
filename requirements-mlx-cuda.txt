@@ -1,0 +1,15 @@
+# Tensorflow cpu-only version (needed for testing).
+tensorflow-cpu
+
+# Torch cpu-only version (needed for testing).
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch
+
+# Jax cpu-only version (needed for testing).
+jax[cpu]
+
+# MLX with CUDA support.
+# Pinned to 0.31.1: the mlx-cuda-13 wheel is not published for 0.31.2 yet.
+mlx[cuda13]==0.31.1
+
+-r requirements-common.txt
