@@ -132,6 +132,11 @@ jobs:
           pytest integration_tests/torch_workflow_test.py
           python integration_tests/torch_custom_fit_test.py
 
+      - name: Test MLX-specific integrations
+        if: ${{ matrix.backend == 'mlx'}}
+        run: |
+          mlx.launch --backend ring -n 2 --hosts 127.0.0.1 integration_tests/mlx_data_parallel.py
+
       - name: Run Tests
         if: ${{ matrix.nnx_enabled == false }}
         run: pytest keras -n auto --dist loadfile --ignore keras/src/applications --ignore keras/src/wrappers --cov=keras --cov-config=pyproject.toml

@@ -4,17 +4,20 @@ import functools
 import warnings
 
 import mlx.core as mx
-import numpy as np  # ONLY for I/O bridge (convert_to_tensor input, convert_to_numpy output)
-# All computation must use mlx.core — never np for math/indexing
 
+# np is ONLY for the I/O bridge (convert_to_tensor input,
+# convert_to_numpy output)
+import numpy as np
+
+# All computation must use mlx.core — never np for math/indexing
 from keras.src import tree
 from keras.src.backend.common import KerasVariable
 from keras.src.backend.common import standardize_dtype
-from keras.src.backend.common.backend_utils import slice_along_axis
 from keras.src.backend.common.dtypes import result_type
 from keras.src.backend.common.keras_tensor import KerasTensor
 from keras.src.backend.common.stateless_scope import StatelessScope
 from keras.src.backend.common.symbolic_scope import SymbolicScope
+
 
 def _flip(x, axis=None):
     """Reverse elements of x along the given axis (pure MLX)."""
@@ -25,7 +28,8 @@ def _flip(x, axis=None):
         if isinstance(axis, int):
             axis = (axis,)
         slices = tuple(
-            builtins.slice(None, None, -1) if i in axis
+            builtins.slice(None, None, -1)
+            if i in axis
             else builtins.slice(None)
             for i in range(x.ndim)
         )
@@ -124,6 +128,12 @@ def convert_to_tensor(x, dtype=None, sparse=None, ragged=None):
             *[getattr(item, "dtype", type(item)) for item in tree.flatten(x)]
         )
     mlx_dtype = _to_mlx_dtype(dtype)
+    if isinstance(x, (list, tuple)) and any(
+        isinstance(item, mx.array) for item in tree.flatten(x)
+    ):
+        # Avoid the numpy round-trip: it would force evaluation, which is
+        # not allowed while tracing under `mx.compile`.
+        return mx.stack([convert_to_tensor(item, dtype=dtype) for item in x])
     return mx.array(np.array(x, dtype=dtype), dtype=mlx_dtype)
 
 
@@ -217,15 +227,14 @@ def compute_output_spec(fn, *args, **kwargs):
                 return KerasTensor(x.shape, standardize_dtype(x.dtype))
             return x
 
-        output_spec = tree.map_structure(
-            convert_mlx_to_keras_tensor, outputs
-        )
+        output_spec = tree.map_structure(convert_mlx_to_keras_tensor, outputs)
     return output_spec
 
 
 def map(f, xs):
     def g(_, x):
         return (), f(x)
+
     _, ys = scan(g, (), xs)
     return ys
 
@@ -240,9 +249,7 @@ def scan(f, init, xs=None, length=None, reverse=False, unroll=1):
                 f"Received: unroll={unroll}"
             )
     if xs is None and length is None:
-        raise ValueError(
-            "Got no `xs` to scan over and `length` not provided."
-        )
+        raise ValueError("Got no `xs` to scan over and `length` not provided.")
 
     input_is_sequence = tree.is_nested(xs)
     output_is_sequence = tree.is_nested(init)
@@ -295,9 +302,7 @@ def associative_scan(f, elems, reverse=False, axis=0):
         return c_flat
 
     num_elems = int(elems_flat[0].shape[axis])
-    if not all(
-        int(elem.shape[axis]) == num_elems for elem in elems_flat[1:]
-    ):
+    if not all(int(elem.shape[axis]) == num_elems for elem in elems_flat[1:]):
         raise ValueError(
             "Array inputs to associative_scan must have the same "
             "first dimension. (saw: {})".format(
@@ -321,8 +326,7 @@ def associative_scan(f, elems, reverse=False, axis=0):
 
     def _interleave(a, b, axis):
         if not (
-            a.shape[axis] == b.shape[axis]
-            or a.shape[axis] == b.shape[axis] + 1
+            a.shape[axis] == b.shape[axis] or a.shape[axis] == b.shape[axis] + 1
         ):
             raise ValueError(
                 "Shapes are incompatible for associative_scan "
@@ -339,8 +343,10 @@ def associative_scan(f, elems, reverse=False, axis=0):
         a_dil = mx.zeros(a_shape, dtype=a.dtype)
         even_indices = mx.arange(0, a_dil_len, 2)
         a_dil = a_dil.at[
-            tuple(builtins.slice(None) if i != axis else even_indices
-                  for i in range(a.ndim))
+            tuple(
+                builtins.slice(None) if i != axis else even_indices
+                for i in range(a.ndim)
+            )
         ].add(a)
 
         b_len = b.shape[axis]
@@ -350,19 +356,17 @@ def associative_scan(f, elems, reverse=False, axis=0):
         b_dil = mx.zeros(b_shape, dtype=b.dtype)
         b_even_indices = mx.arange(0, b_dil_len, 2)
         b_dil = b_dil.at[
-            tuple(builtins.slice(None) if i != axis else b_even_indices
-                  for i in range(b.ndim))
+            tuple(
+                builtins.slice(None) if i != axis else b_even_indices
+                for i in range(b.ndim)
+            )
         ].add(b)
 
         # Pad and combine
         a_pad_widths = [(0, 0)] * a.ndim
-        a_pad_widths[axis] = (
-            0, 1 if a_len == b_len else 0
-        )
+        a_pad_widths[axis] = (0, 1 if a_len == b_len else 0)
         b_pad_widths = [(0, 0)] * b.ndim
-        b_pad_widths[axis] = (
-            (1, 0) if a_len == b_len else (1, 1)
-        )
+        b_pad_widths[axis] = (1, 0) if a_len == b_len else (1, 1)
         a_padded = mx.pad(a_dil, a_pad_widths)
         b_padded = mx.pad(b_dil, b_pad_widths)
         if a.dtype == mx.bool_:

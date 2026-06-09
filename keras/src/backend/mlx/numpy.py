@@ -57,9 +57,7 @@ def add(x1, x2):
 
 def einsum(subscripts, *operands, **kwargs):
     operands = tree.map_structure(convert_to_tensor, operands)
-    dtypes_to_resolve = list(
-        set(standardize_dtype(x.dtype) for x in operands)
-    )
+    dtypes_to_resolve = list(set(standardize_dtype(x.dtype) for x in operands))
     if len(dtypes_to_resolve) == 1 and dtypes_to_resolve[0] == "int8":
         result_dtype = "int32"
     else:
@@ -67,16 +65,16 @@ def einsum(subscripts, *operands, **kwargs):
     compute_dtype = result_dtype
     # mx.einsum is backed by matmul and only supports float types; for
     # bfloat16 and integer/bool result dtypes compute in float32.
-    if compute_dtype == "bfloat16" or "int" in compute_dtype or (
-        compute_dtype == "bool"
+    if (
+        compute_dtype == "bfloat16"
+        or "int" in compute_dtype
+        or (compute_dtype == "bool")
     ):
         compute_dtype = "float32"
     operands = tree.map_structure(
         lambda x: x.astype(_to_mlx_dtype(compute_dtype)), operands
     )
-    return mx.einsum(subscripts, *operands).astype(
-        _to_mlx_dtype(result_dtype)
-    )
+    return mx.einsum(subscripts, *operands).astype(_to_mlx_dtype(result_dtype))
 
 
 def subtract(x1, x2):
@@ -205,7 +203,11 @@ def angle(x):
     # For real numbers, angle is 0 for positive, pi for negative
     if standardize_dtype(x.dtype) in ("complex64",):
         return mx.arctan2(mx.imag(x), mx.real(x))
-    return mx.where(x < 0, convert_to_tensor(math.pi, dtype=dtype), convert_to_tensor(0.0, dtype=dtype))
+    return mx.where(
+        x < 0,
+        convert_to_tensor(math.pi, dtype=dtype),
+        convert_to_tensor(0.0, dtype=dtype),
+    )
 
 
 def any(x, axis=None, keepdims=False):
@@ -441,7 +443,8 @@ def kaiser(M, beta):
         return convert_to_tensor([], dtype=config.floatx())
     if M == 1:
         return ones(1, dtype=config.floatx())
-    # Kaiser window: I0(beta * sqrt(1 - ((n - (M-1)/2) / ((M-1)/2))^2)) / I0(beta)
+    # Kaiser window:
+    # I0(beta * sqrt(1 - ((n - (M-1)/2) / ((M-1)/2))^2)) / I0(beta)
     n = mx.arange(M, dtype=_to_mlx_dtype(config.floatx()))
     alpha = (M - 1) / 2.0
     arg = beta * mx.sqrt(
@@ -455,9 +458,7 @@ def kaiser(M, beta):
 
 def bincount(x, weights=None, minlength=0, sparse=False):
     if sparse:
-        raise ValueError(
-            "Unsupported value `sparse=True` with mlx backend"
-        )
+        raise ValueError("Unsupported value `sparse=True` with mlx backend")
     x = convert_to_tensor(x)
     dtypes_to_resolve = [x.dtype]
     if weights is not None:
@@ -475,7 +476,7 @@ def bincount(x, weights=None, minlength=0, sparse=False):
             return mx.array([], dtype=_to_mlx_dtype(dtype))
         # One-hot via broadcast: x_1d[:, None] == arange[None, :]
         bins = mx.arange(length)
-        one_hot = (mx.expand_dims(x_1d, 1) == mx.expand_dims(bins, 0))
+        one_hot = mx.expand_dims(x_1d, 1) == mx.expand_dims(bins, 0)
         if w_1d is not None:
             result = mx.sum(
                 one_hot.astype(w_1d.dtype) * mx.expand_dims(w_1d, 1),
@@ -498,7 +499,9 @@ def bincount(x, weights=None, minlength=0, sparse=False):
         mx.eval(*rows)
         max_len = builtins.max(r.shape[0] for r in rows)
         padded = [
-            mx.pad(r, [(0, max_len - r.shape[0])]) if r.shape[0] < max_len else r
+            mx.pad(r, [(0, max_len - r.shape[0])])
+            if r.shape[0] < max_len
+            else r
             for r in rows
         ]
         return mx.stack(padded)
@@ -588,7 +591,9 @@ def cbrt(x):
         dtype = "float64"
     x = x.astype(_to_mlx_dtype(dtype))
     # cbrt(x) = sign(x) * |x|^(1/3)
-    return mx.sign(x) * mx.power(mx.abs(x), convert_to_tensor(1.0 / 3.0, dtype=dtype))
+    return mx.sign(x) * mx.power(
+        mx.abs(x), convert_to_tensor(1.0 / 3.0, dtype=dtype)
+    )
 
 
 def ceil(x):
@@ -878,7 +883,9 @@ def exp2(x):
     if "int" in ori_dtype or ori_dtype == "bool":
         x = x.astype(_to_mlx_dtype(config.floatx()))
     # 2^x = exp(x * ln(2))
-    return mx.exp(x * convert_to_tensor(math.log(2), dtype=standardize_dtype(x.dtype)))
+    return mx.exp(
+        x * convert_to_tensor(math.log(2), dtype=standardize_dtype(x.dtype))
+    )
 
 
 def expand_dims(x, axis):
@@ -1056,18 +1063,48 @@ def i0(x):
     # Abramowitz & Stegun polynomial approximation for I0
     # For |x| < 3.75
     t = (ax / 3.75) ** 2
-    small = (
-        1.0
-        + t * (3.5156229 + t * (3.0899424 + t * (1.2067492
-        + t * (0.2659732 + t * (0.0360768 + t * 0.0045813)))))
+    small = 1.0 + t * (
+        3.5156229
+        + t
+        * (
+            3.0899424
+            + t
+            * (1.2067492 + t * (0.2659732 + t * (0.0360768 + t * 0.0045813)))
+        )
     )
     # For |x| >= 3.75
     t2 = 3.75 / ax
     large = (
-        mx.exp(ax) / mx.sqrt(ax)
-        * (0.39894228 + t2 * (0.01328592 + t2 * (0.00225319
-        + t2 * (-0.00157565 + t2 * (0.00916281 + t2 * (-0.02057706
-        + t2 * (0.02635537 + t2 * (-0.01647633 + t2 * 0.00392377))))))))
+        mx.exp(ax)
+        / mx.sqrt(ax)
+        * (
+            0.39894228
+            + t2
+            * (
+                0.01328592
+                + t2
+                * (
+                    0.00225319
+                    + t2
+                    * (
+                        -0.00157565
+                        + t2
+                        * (
+                            0.00916281
+                            + t2
+                            * (
+                                -0.02057706
+                                + t2
+                                * (
+                                    0.02635537
+                                    + t2 * (-0.01647633 + t2 * 0.00392377)
+                                )
+                            )
+                        )
+                    )
+                )
+            )
+        )
     )
     return mx.where(ax < 3.75, small, large)
 
@@ -1093,9 +1130,7 @@ def isin(x1, x2, assume_unique=False, invert=False):
     x2_flat = mx.flatten(x2)
     # Broadcast compare: x1[..., None] == x2_flat[None, ...]
     x1_flat = mx.flatten(x1)
-    matches = mx.equal(
-        mx.expand_dims(x1_flat, 1), mx.expand_dims(x2_flat, 0)
-    )
+    matches = mx.equal(mx.expand_dims(x1_flat, 1), mx.expand_dims(x2_flat, 0))
     result = mx.any(matches, axis=1)
     result = mx.reshape(result, x1.shape)
     if invert:
@@ -1467,7 +1502,9 @@ def nanargmax(x, axis=None, keepdims=False):
     if "float" not in dtype_str:
         return argmax(x, axis=axis, keepdims=keepdims)
     nan_mask = mx.isnan(x)
-    x_filled = mx.where(nan_mask, convert_to_tensor(float("-inf"), dtype=dtype_str), x)
+    x_filled = mx.where(
+        nan_mask, convert_to_tensor(float("-inf"), dtype=dtype_str), x
+    )
     all_nan = mx.all(nan_mask, axis=axis, keepdims=keepdims)
     result = argmax(x_filled, axis=axis, keepdims=keepdims)
     return mx.where(all_nan, convert_to_tensor(-1, dtype="int32"), result)
@@ -1479,7 +1516,9 @@ def nanargmin(x, axis=None, keepdims=False):
     if "float" not in dtype_str:
         return argmin(x, axis=axis, keepdims=keepdims)
     nan_mask = mx.isnan(x)
-    x_filled = mx.where(nan_mask, convert_to_tensor(float("inf"), dtype=dtype_str), x)
+    x_filled = mx.where(
+        nan_mask, convert_to_tensor(float("inf"), dtype=dtype_str), x
+    )
     all_nan = mx.all(nan_mask, axis=axis, keepdims=keepdims)
     result = argmin(x_filled, axis=axis, keepdims=keepdims)
     return mx.where(all_nan, convert_to_tensor(-1, dtype="int32"), result)
@@ -1520,9 +1559,13 @@ def nanmax(x, axis=None, keepdims=False):
     if x.dtype not in (mx.float16, mx.bfloat16, mx.float32):
         return mx.max(x, axis=axis, keepdims=keepdims)
     all_nan = mx.all(mx.isnan(x), axis=axis, keepdims=keepdims)
-    x_filled = mx.where(mx.isnan(x), convert_to_tensor(float("-inf"), dtype=x.dtype), x)
+    x_filled = mx.where(
+        mx.isnan(x), convert_to_tensor(float("-inf"), dtype=x.dtype), x
+    )
     result = mx.max(x_filled, axis=axis, keepdims=keepdims)
-    return mx.where(all_nan, convert_to_tensor(float("nan"), dtype=result.dtype), result)
+    return mx.where(
+        all_nan, convert_to_tensor(float("nan"), dtype=result.dtype), result
+    )
 
 
 def nanmean(x, axis=None, keepdims=False):
@@ -1573,9 +1616,7 @@ def nanmedian(x, axis=None, keepdims=False):
     )
     result = mx.squeeze(result, axis=-1)
     if keepdims:
-        target = [
-            1 if a in reduced else x.shape[a] for a in range(x.ndim)
-        ]
+        target = [1 if a in reduced else x.shape[a] for a in range(x.ndim)]
         result = mx.reshape(result, target)
     return result
 
@@ -1587,9 +1628,13 @@ def nanmin(x, axis=None, keepdims=False):
     if x.dtype not in (mx.float16, mx.bfloat16, mx.float32):
         return mx.min(x, axis=axis, keepdims=keepdims)
     all_nan = mx.all(mx.isnan(x), axis=axis, keepdims=keepdims)
-    x_filled = mx.where(mx.isnan(x), convert_to_tensor(float("inf"), dtype=x.dtype), x)
+    x_filled = mx.where(
+        mx.isnan(x), convert_to_tensor(float("inf"), dtype=x.dtype), x
+    )
     result = mx.min(x_filled, axis=axis, keepdims=keepdims)
-    return mx.where(all_nan, convert_to_tensor(float("nan"), dtype=result.dtype), result)
+    return mx.where(
+        all_nan, convert_to_tensor(float("nan"), dtype=result.dtype), result
+    )
 
 
 def nanpercentile(x, q, axis=None, method="linear", keepdims=False):
@@ -1662,7 +1707,11 @@ def nanstd(x, axis=None, keepdims=False):
         mean_expanded = mean_val
     else:
         mean_expanded = mean_val
-    diff_sq = mx.where(nan_mask, convert_to_tensor(0, dtype=compute_dtype), (x - mean_expanded) ** 2)
+    diff_sq = mx.where(
+        nan_mask,
+        convert_to_tensor(0, dtype=compute_dtype),
+        (x - mean_expanded) ** 2,
+    )
     variance = mx.sum(diff_sq, axis=axis, keepdims=keepdims) / count
     return mx.sqrt(variance).astype(_to_mlx_dtype(result_dtype))
 
@@ -1676,9 +1725,7 @@ def nansum(x, axis=None, keepdims=False):
     elif dtype in ("uint8", "uint16"):
         dtype = "uint32"
     x = mx.where(mx.isnan(x), convert_to_tensor(0, dtype=x.dtype), x)
-    return mx.sum(x, axis=axis, keepdims=keepdims).astype(
-        _to_mlx_dtype(dtype)
-    )
+    return mx.sum(x, axis=axis, keepdims=keepdims).astype(_to_mlx_dtype(dtype))
 
 
 def nanvar(x, axis=None, keepdims=False):
@@ -1701,7 +1748,11 @@ def nanvar(x, axis=None, keepdims=False):
         mean_expanded = mean_val
     else:
         mean_expanded = mean_val
-    diff_sq = mx.where(nan_mask, convert_to_tensor(0, dtype=compute_dtype), (x - mean_expanded) ** 2)
+    diff_sq = mx.where(
+        nan_mask,
+        convert_to_tensor(0, dtype=compute_dtype),
+        (x - mean_expanded) ** 2,
+    )
     return (mx.sum(diff_sq, axis=axis, keepdims=keepdims) / count).astype(
         _to_mlx_dtype(result_dtype)
     )
@@ -1801,7 +1852,11 @@ def pad(x, pad_width, mode="constant", constant_values=None):
             # Reflect including the edge: [before-1::-1]
             if before > 0:
                 slc = [slice(None)] * x.ndim
-                slc[dim] = slice(before - 1, None, -1) if before <= n else slice(n - 1, None, -1)
+                slc[dim] = (
+                    slice(before - 1, None, -1)
+                    if before <= n
+                    else slice(n - 1, None, -1)
+                )
                 pad_arr = x[tuple(slc)]
                 # Trim if needed
                 trim = [slice(None)] * x.ndim
@@ -1810,7 +1865,11 @@ def pad(x, pad_width, mode="constant", constant_values=None):
             if after > 0:
                 slc = [slice(None)] * x.ndim
                 cur_n = x.shape[dim]
-                slc[dim] = slice(cur_n - 1, cur_n - 1 - after if cur_n - 1 - after >= 0 else None, -1)
+                slc[dim] = slice(
+                    cur_n - 1,
+                    cur_n - 1 - after if cur_n - 1 - after >= 0 else None,
+                    -1,
+                )
                 pad_arr = x[tuple(slc)]
                 trim = [slice(None)] * x.ndim
                 trim[dim] = slice(0, after)
@@ -1907,8 +1966,7 @@ def _quantile_finalize(result, q, k, orig_shape, reduced, scalar_q, keepdims):
     result = mx.moveaxis(result, result.ndim - 1, 0)
     if keepdims:
         target = [k] + [
-            1 if a in reduced else orig_shape[a]
-            for a in range(len(orig_shape))
+            1 if a in reduced else orig_shape[a] for a in range(len(orig_shape))
         ]
         result = mx.reshape(result, target)
     if scalar_q:
@@ -1997,8 +2055,12 @@ def unravel_index(indices, shape):
     result = []
     remainder = indices
     for dim in reversed(shape):
-        result.append(mx.remainder(remainder, convert_to_tensor(dim, dtype=dtype)))
-        remainder = mx.floor_divide(remainder, convert_to_tensor(dim, dtype=dtype))
+        result.append(
+            mx.remainder(remainder, convert_to_tensor(dim, dtype=dtype))
+        )
+        remainder = mx.floor_divide(
+            remainder, convert_to_tensor(dim, dtype=dtype)
+        )
     result.reverse()
     return tuple(r.astype(_to_mlx_dtype(dtype)) for r in result)
 
@@ -2060,11 +2122,7 @@ def searchsorted(sorted_sequence, values, side="left"):
             "to extend it to N-D sequences. Received: "
             f"sorted_sequence.shape={sorted_sequence.shape}"
         )
-    out_type = (
-        "int32"
-        if sorted_sequence.shape[0] <= 2**31 - 1
-        else "int64"
-    )
+    out_type = "int32" if sorted_sequence.shape[0] <= 2**31 - 1 else "int64"
     # Broadcast comparison: expand values and compare against sorted_sequence
     vals_shape = values.shape
     vals_flat = mx.flatten(values)
@@ -2653,7 +2711,8 @@ def nextafter(x1, x2):
     int_dtype = {2: mx.int16, 4: mx.int32}[x1.dtype.size]
     bits = x1.view(int_dtype)
     is_neg = bits < 0
-    # Positive floats: +1 moves toward +inf; negative floats: -1 moves toward -inf
+    # Positive floats: +1 moves toward +inf; negative floats: -1 moves
+    # toward -inf
     step_up = mx.where(is_neg, bits - 1, bits + 1)
     step_down = mx.where(is_neg, bits + 1, bits - 1)
     # -0 (sign bit only) stepping up → smallest positive (+1 as int)
@@ -2772,9 +2831,7 @@ def sum(x, axis=None, keepdims=False):
         dtype = "int32"
     elif dtype in ("uint8", "uint16"):
         dtype = "uint32"
-    return mx.sum(x, axis=axis, keepdims=keepdims).astype(
-        _to_mlx_dtype(dtype)
-    )
+    return mx.sum(x, axis=axis, keepdims=keepdims).astype(_to_mlx_dtype(dtype))
 
 
 def eye(N, M=None, k=0, dtype=None):
@@ -2920,13 +2977,16 @@ def histogram(x, bins=10, range=None):
         lo, hi = float(mx.min(x_flat)), float(mx.max(x_flat))
     bin_edges = mx.linspace(lo, hi, bins + 1)
     # Assign each element to a bin via broadcast comparison
-    # x_flat[:, None] >= bin_edges[None, :-1] and x_flat[:, None] < bin_edges[None, 1:]
+    # x_flat[:, None] >= bin_edges[None, :-1] and
+    # x_flat[:, None] < bin_edges[None, 1:]
     x_exp = mx.expand_dims(x_flat, 1)
     edges_lo = mx.expand_dims(bin_edges[:-1], 0)
     edges_hi = mx.expand_dims(bin_edges[1:], 0)
     in_bin = mx.logical_and(x_exp >= edges_lo, x_exp < edges_hi)
     # Last bin is inclusive on the right
-    in_last = mx.logical_and(x_exp >= edges_lo[:, -1:], x_exp <= edges_hi[:, -1:])
+    in_last = mx.logical_and(
+        x_exp >= edges_lo[:, -1:], x_exp <= edges_hi[:, -1:]
+    )
     in_bin = mx.concatenate([in_bin[:, :-1], in_last], axis=1)
     hist = mx.sum(in_bin.astype(mx.int32), axis=0)
     return hist, bin_edges

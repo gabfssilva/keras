@@ -25,26 +25,20 @@ def normal(shape, mean=0.0, stddev=1.0, dtype=None, seed=None):
 def uniform(shape, minval=0.0, maxval=1.0, dtype=None, seed=None):
     dtype = dtype or floatx()
     key = _get_key(seed)
-    sample = mlx_random.uniform(
-        shape=shape, low=minval, high=maxval, key=key
-    )
+    sample = mlx_random.uniform(shape=shape, low=minval, high=maxval, key=key)
     return sample.astype(_to_mlx_dtype(dtype))
 
 
-def categorical(logits, num_samples, dtype="int64", seed=None):
+def categorical(logits, num_samples, dtype="int32", seed=None):
     key = _get_key(seed)
     logits = convert_to_tensor(logits)
-    output = mlx_random.categorical(
-        logits, num_samples=num_samples, key=key
-    )
+    output = mlx_random.categorical(logits, num_samples=num_samples, key=key)
     return output.astype(_to_mlx_dtype(dtype))
 
 
 def randint(shape, minval, maxval, dtype="int32", seed=None):
     key = _get_key(seed)
-    sample = mlx_random.randint(
-        low=minval, high=maxval, shape=shape, key=key
-    )
+    sample = mlx_random.randint(low=minval, high=maxval, shape=shape, key=key)
     return sample.astype(_to_mlx_dtype(dtype))
 
 
@@ -140,9 +134,7 @@ def binomial(shape, counts, probabilities, dtype=None, seed=None):
     if max_n == 0:
         return mx.zeros(shape, dtype=_to_mlx_dtype(dtype))
     # Generate max_n Bernoulli trials and sum
-    trials = mx.random.uniform(
-        shape=(max_n,) + tuple(shape), key=key
-    )
+    trials = mx.random.uniform(shape=(max_n,) + tuple(shape), key=key)
     successes = (trials < mx.expand_dims(probabilities, 0)).astype(mx.float32)
     # Mask out trials beyond each element's count
     trial_idx = mx.arange(max_n).reshape((-1,) + (1,) * len(shape))

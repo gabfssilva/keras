@@ -1,7 +1,6 @@
 import warnings
 
 import mlx.core as mx
-import numpy as np
 
 from keras.src import backend
 from keras.src import callbacks as callbacks_module
@@ -10,11 +9,14 @@ from keras.src import tree
 from keras.src.backend.common import standardize_dtype
 from keras.src.backend.common.keras_tensor import KerasTensor
 from keras.src.backend.config import max_epochs
+from keras.src.backend.mlx import distribution_lib as mlx_distribution_lib
 from keras.src.backend.mlx.core import convert_to_tensor
 from keras.src.backend.mlx.core import is_tensor
+from keras.src.distribution import distribution_lib
 from keras.src.trainers import trainer as base_trainer
 from keras.src.trainers.data_adapters import array_slicing
 from keras.src.trainers.data_adapters import data_adapter_utils
+from keras.src.trainers.data_adapters.tf_dataset_adapter import TFDatasetAdapter
 from keras.src.trainers.epoch_iterator import EpochIterator
 from keras.src.utils import traceback_utils
 from keras.src.utils.python_utils import pythonify_logs
@@ -33,6 +35,27 @@ class MLXTrainer(base_trainer.Trainer):
     def _set_trainable_values(self, values):
         for v, val in zip(self.trainable_variables, values):
             v._value = val
+
+    def _train_state_variables(self):
+        return (
+            self.trainable_variables,
+            self.non_trainable_variables,
+            self.optimizer.variables,
+            self.metrics_variables,
+        )
+
+    def _test_state_variables(self):
+        return (
+            self.trainable_variables,
+            self.non_trainable_variables,
+            self.metrics_variables,
+        )
+
+    def _predict_state_variables(self):
+        return (
+            self.trainable_variables,
+            self.non_trainable_variables,
+        )
 
     def train_step(self, data):
         x, y, sample_weight = data_adapter_utils.unpack_x_y_sample_weight(data)
@@ -70,12 +93,9 @@ class MLXTrainer(base_trainer.Trainer):
                     ]
                 else:
                     grads = (
-                        mx.distributed.all_sum(grads, group=group)
-                        / world_size
+                        mx.distributed.all_sum(grads, group=group) / world_size
                     )
             self.optimizer.apply(grads, self.trainable_variables)
-            # Force evaluation to ensure state is updated
-            mx.eval(*self._get_trainable_values())
         else:
             loss = loss_fn()
             warnings.warn("The model does not have any trainable weights.")
@@ -92,11 +112,7 @@ class MLXTrainer(base_trainer.Trainer):
                 i for i in tree.flatten(x) if i is not None
             ).shape[0],
         )
-        logs = self.compute_metrics(x, y, y_pred, sample_weight=sample_weight)
-        # Force full evaluation and convert to Python scalars to avoid
-        # Metal command buffer conflicts between training steps
-        mx.eval(*[v.value for v in self.metrics_variables])
-        return pythonify_logs(logs)
+        return self.compute_metrics(x, y, y_pred, sample_weight=sample_weight)
 
     def test_step(self, data):
         (
@@ -117,9 +133,7 @@ class MLXTrainer(base_trainer.Trainer):
                 i for i in tree.flatten(x) if i is not None
             ).shape[0],
         )
-        logs = self.compute_metrics(x, y, y_pred, sample_weight=sample_weight)
-        mx.eval(*[v.value for v in self.metrics_variables])
-        return pythonify_logs(logs)
+        return self.compute_metrics(x, y, y_pred, sample_weight=sample_weight)
 
     def predict_step(self, data):
         x, _, _ = data_adapter_utils.unpack_x_y_sample_weight(data)
@@ -133,9 +147,25 @@ class MLXTrainer(base_trainer.Trainer):
         if self.train_function is not None and not force:
             return self.train_function
 
+        def step_function(state, data):
+            _restore_state(self._train_state_variables(), state)
+            logs = self.train_step(data)
+            return logs, _capture_state(self._train_state_variables())
+
+        if not self.run_eagerly and self.jit_compile:
+            step_function = mx.compile(step_function)
+
         def one_step_on_data(data):
-            data = data[0]
-            return self.train_step(data)
+            if not self.optimizer.built:
+                self.optimizer.build(self.trainable_variables)
+            state = _capture_state(self._train_state_variables())
+            for single_batch in data:
+                logs, state = step_function(state, _convert_batch(single_batch))
+                # Force evaluation between batches to avoid Metal command
+                # buffer conflicts
+                mx.eval(state)
+            _restore_state(self._train_state_variables(), state)
+            return pythonify_logs(logs)
 
         self.train_function = one_step_on_data
 
@@ -143,9 +173,21 @@ class MLXTrainer(base_trainer.Trainer):
         if self.test_function is not None and not force:
             return self.test_function
 
+        def step_function(state, data):
+            _restore_state(self._test_state_variables(), state)
+            logs = self.test_step(data)
+            return logs, _capture_state(self._test_state_variables())
+
+        if not self.run_eagerly and self.jit_compile:
+            step_function = mx.compile(step_function)
+
         def one_step_on_data(data):
-            data = data[0]
-            return self.test_step(data)
+            state = _capture_state(self._test_state_variables())
+            for single_batch in data:
+                logs, state = step_function(state, _convert_batch(single_batch))
+                mx.eval(state)
+            _restore_state(self._test_state_variables(), state)
+            return pythonify_logs(logs)
 
         self.test_function = one_step_on_data
 
@@ -153,9 +195,28 @@ class MLXTrainer(base_trainer.Trainer):
         if self.predict_function is not None and not force:
             return self.predict_function
 
+        def step_function(state, data):
+            _restore_state(self._predict_state_variables(), state)
+            outputs = self.predict_step(data)
+            return outputs, _capture_state(self._predict_state_variables())
+
+        if not self.run_eagerly and self.jit_compile:
+            step_function = mx.compile(step_function)
+
         def one_step_on_data(data):
-            data = data[0]
-            return self.predict_step(data)
+            state = _capture_state(self._predict_state_variables())
+            outputs, state = step_function(state, _convert_batch(data[0]))
+            for single_batch in data[1:]:
+                batch_outputs, state = step_function(
+                    state, _convert_batch(single_batch)
+                )
+                outputs = tree.map_structure(
+                    lambda t1, t2: mx.concatenate([t1, t2]),
+                    outputs,
+                    batch_outputs,
+                )
+            _restore_state(self._predict_state_variables(), state)
+            return outputs
 
         self.predict_function = one_step_on_data
 
@@ -166,9 +227,7 @@ class MLXTrainer(base_trainer.Trainer):
                 break
             iterator.reset()
 
-        model_unbuilt = not all(
-            layer.built for layer in self._flatten_layers()
-        )
+        model_unbuilt = not all(layer.built for layer in self._flatten_layers())
         compile_metrics_unbuilt = (
             self._compile_metrics is not None
             and not self._compile_metrics.built
@@ -265,7 +324,7 @@ class MLXTrainer(base_trainer.Trainer):
                 val_sample_weight,
             ) = data_adapter_utils.unpack_x_y_sample_weight(validation_data)
 
-        epoch_iterator = EpochIterator(
+        epoch_iterator = MLXEpochIterator(
             x=x,
             y=y,
             sample_weight=sample_weight,
@@ -313,7 +372,7 @@ class MLXTrainer(base_trainer.Trainer):
                 epoch, validation_freq
             ):
                 if getattr(self, "_eval_epoch_iterator", None) is None:
-                    self._eval_epoch_iterator = EpochIterator(
+                    self._eval_epoch_iterator = MLXEpochIterator(
                         x=val_x,
                         y=val_y,
                         sample_weight=val_sample_weight,
@@ -373,7 +432,7 @@ class MLXTrainer(base_trainer.Trainer):
         if use_cached_eval_dataset:
             epoch_iterator = self._eval_epoch_iterator
         else:
-            epoch_iterator = EpochIterator(
+            epoch_iterator = MLXEpochIterator(
                 x=x,
                 y=y,
                 sample_weight=sample_weight,
@@ -417,7 +476,7 @@ class MLXTrainer(base_trainer.Trainer):
     def predict(
         self, x, batch_size=None, verbose="auto", steps=None, callbacks=None
     ):
-        epoch_iterator = EpochIterator(
+        epoch_iterator = MLXEpochIterator(
             x=x,
             batch_size=batch_size,
             steps_per_epoch=steps,
@@ -458,15 +517,11 @@ class MLXTrainer(base_trainer.Trainer):
             callbacks.on_predict_batch_begin(begin_step)
             batch_outputs = self.predict_function(data)
             outputs = append_to_outputs(batch_outputs, outputs)
-            callbacks.on_predict_batch_end(
-                end_step, {"outputs": batch_outputs}
-            )
+            callbacks.on_predict_batch_end(end_step, {"outputs": batch_outputs})
             if self.stop_predicting:
                 break
         callbacks.on_predict_end()
-        return tree.map_structure_up_to(
-            batch_outputs, mx.concatenate, outputs
-        )
+        return tree.map_structure_up_to(batch_outputs, mx.concatenate, outputs)
 
     def train_on_batch(
         self,
@@ -529,3 +584,57 @@ class MLXTrainer(base_trainer.Trainer):
             backend.convert_to_numpy, batch_outputs
         )
         return batch_outputs
+
+
+def _capture_state(variable_groups):
+    return [[v.value for v in group] for group in variable_groups]
+
+
+def _restore_state(variable_groups, state):
+    for group, values in zip(variable_groups, state):
+        for variable, value in zip(group, values):
+            variable._value = value
+
+
+def _convert_batch(data):
+    return tree.map_structure(
+        lambda x: x if x is None else convert_to_tensor(x), data
+    )
+
+
+class MLXEpochIterator(EpochIterator):
+    def _get_iterator(self):
+        distribution = distribution_lib.distribution()
+        # `tf.data` inputs are already sharded per process by
+        # `distribution.distribute_dataset` inside `TFDatasetAdapter`, and
+        # `auto_shard_dataset=False` means the user pre-sharded the data.
+        if (
+            distribution is not None
+            and distribution.auto_shard_dataset
+            and mlx_distribution_lib.num_processes() > 1
+            and not isinstance(self.data_adapter, TFDatasetAdapter)
+        ):
+            return self._get_distributed_iterator(distribution)
+        return self.data_adapter.get_numpy_iterator()
+
+    def _get_distributed_iterator(self, distribution):
+        """Shard each batch so every process trains on its own slice."""
+
+        def shard(d, layout):
+            if d is None:
+                return None
+            return mlx_distribution_lib.distribute_data_input(
+                d, layout, distribution.batch_dim_name
+            )
+
+        layouts = None
+        for data in self.data_adapter.get_numpy_iterator():
+            if layouts is None:
+
+                def get_layout(d):
+                    if d is None:
+                        return None
+                    return distribution.get_data_layout(d.shape)
+
+                layouts = tree.map_structure(get_layout, data)
+            yield tree.map_structure(shard, data, layouts)

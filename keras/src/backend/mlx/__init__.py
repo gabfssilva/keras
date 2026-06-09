@@ -20,7 +20,9 @@ from keras.src.backend.mlx.core import convert_to_tensor
 from keras.src.backend.mlx.core import device_scope
 from keras.src.backend.mlx.core import is_tensor
 from keras.src.backend.mlx.core import random_seed_dtype
+from keras.src.backend.mlx.core import scatter
 from keras.src.backend.mlx.core import shape
+from keras.src.backend.mlx.core import stop_gradient
 from keras.src.backend.mlx.core import vectorized_map
 from keras.src.backend.mlx.rnn import bidirectional_gru
 from keras.src.backend.mlx.rnn import bidirectional_lstm

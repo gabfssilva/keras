@@ -6,14 +6,18 @@ Run with `mlx.launch` so each rank is its own process (NOT via pytest):
         --hosts 127.0.0.1 integration_tests/mlx_data_parallel.py
 
 It asserts that replicated weights stay in sync through an all-reduced
-gradient step, and that a 2-process half-batch step equals a 1-process
-full-batch step. Each rank exits nonzero on failure; mlx.launch propagates it.
+gradient step, that a 2-process half-batch step equals a 1-process
+full-batch step, and that `model.fit` under `DataParallel` automatically
+shards the full dataset to reproduce the manual-shard reference step.
+Each rank exits nonzero on failure; mlx.launch propagates it.
 """
 
 import sys
 
 import mlx.core as mx
 import numpy as np
+
+import keras
 
 
 def _check(name, ok, rank):
@@ -104,6 +108,39 @@ def main():
         mx.abs(gb - gb_full).item() < tol
     )
     _check("dp_halfbatch_equals_single_fullbatch", same_grad, rank)
+
+    # model.fit on the FULL dataset per process: the trainer must shard each
+    # batch automatically under DataParallel, so one fit step on the global
+    # batch reproduces the manual-shard SGD step computed above.
+    distribution = keras.distribution.DataParallel()
+    with distribution.scope():
+        model = keras.Sequential([keras.layers.Dense(1)])
+        model.build((None, 4))
+        model.set_weights([np.array(w).reshape(4, 1), np.array(b).reshape(1)])
+        model.compile(
+            optimizer=keras.optimizers.SGD(learning_rate=lr), loss="mse"
+        )
+        model.fit(
+            np.array(x_full),
+            np.array(y_full).reshape(-1, 1),
+            batch_size=global_n,
+            epochs=1,
+            shuffle=False,
+            verbose=0,
+        )
+    kernel, bias = model.get_weights()
+
+    _check(
+        "fit_weights_identical_across_ranks",
+        _all_equal_across_ranks(mx.array(kernel), group)
+        and _all_equal_across_ranks(mx.array(bias), group),
+        rank,
+    )
+
+    fit_matches_manual = bool(
+        np.all(np.abs(kernel[:, 0] - np.array(w_new)) < tol)
+    ) and bool(abs(bias[0] - float(b_new.item())) < tol)
+    _check("fit_autoshard_equals_manual_shard_step", fit_matches_manual, rank)
 
     print(f"[rank {rank}] ALL CHECKS PASSED (world={world})", flush=True)
 

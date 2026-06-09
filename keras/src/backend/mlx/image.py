@@ -1116,9 +1116,7 @@ def map_coordinates(
         lower = [
             safe_idx(coords_floor[i], inputs.shape[i]) for i in range(ndim)
         ]
-        upper = [
-            safe_idx(coords_ceil[i], inputs.shape[i]) for i in range(ndim)
-        ]
+        upper = [safe_idx(coords_ceil[i], inputs.shape[i]) for i in range(ndim)]
 
         result = None
         for corner in range(2**ndim):

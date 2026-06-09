@@ -1,6 +1,7 @@
 import types
 import warnings
 
+from keras.src import backend
 from keras.src.distribution import distribution_lib
 from keras.src.trainers.data_adapters import array_data_adapter
 from keras.src.trainers.data_adapters import data_adapter
@@ -32,12 +33,15 @@ def get_data_adapter(
     if isinstance(x, data_adapter.DataAdapter):
         return x
 
-    # Check for multi-process/worker distribution.
+    # Check for multi-process/worker distribution. The MLX backend shards
+    # array batches per process in its epoch iterator, so it does not
+    # require a `tf.data.Dataset`.
     distribution = distribution_lib.distribution()
     if (
         distribution is not None
         and getattr(distribution, "_is_multi_process", False)
         and getattr(distribution, "auto_shard_dataset", False)
+        and backend.backend() != "mlx"
         and not is_tf_dataset(x)
     ):
         raise ValueError(

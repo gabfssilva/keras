@@ -9,11 +9,8 @@ from keras.src.backend.common.backend_utils import (
 from keras.src.backend.common.backend_utils import (
     compute_conv_transpose_padding_args_for_jax,
 )
-from keras.src.backend.config import floatx
-from keras.src.backend.mlx.core import _flip
 from keras.src.backend.mlx.core import cast
 from keras.src.backend.mlx.core import convert_to_tensor
-
 
 # ---------------------------------------------------------------------------
 # Activations
@@ -27,8 +24,10 @@ def relu(x):
 
 def relu6(x):
     x = convert_to_tensor(x)
-    return mx.minimum(mx.maximum(x, mx.array(0.0, dtype=x.dtype)),
-                      mx.array(6.0, dtype=x.dtype))
+    return mx.minimum(
+        mx.maximum(x, mx.array(0.0, dtype=x.dtype)),
+        mx.array(6.0, dtype=x.dtype),
+    )
 
 
 def sigmoid(x):
@@ -151,14 +150,12 @@ def selu(x):
 def gelu(x, approximate=True):
     x = convert_to_tensor(x)
     if approximate:
-        sqrt_2_over_pi = mx.array(
-            math.sqrt(2.0 / math.pi), dtype=x.dtype
-        )
+        sqrt_2_over_pi = mx.array(math.sqrt(2.0 / math.pi), dtype=x.dtype)
         cdf = mx.array(0.5, dtype=x.dtype) * (
             mx.array(1.0, dtype=x.dtype)
             + mx.tanh(
                 sqrt_2_over_pi
-                * (x + mx.array(0.044715, dtype=x.dtype) * (x ** 3))
+                * (x + mx.array(0.044715, dtype=x.dtype) * (x**3))
             )
         )
         return x * cdf
@@ -193,8 +190,9 @@ def glu(x, axis=-1):
 
 def hard_tanh(x):
     x = convert_to_tensor(x)
-    return mx.clip(x, mx.array(-1.0, dtype=x.dtype),
-                   mx.array(1.0, dtype=x.dtype))
+    return mx.clip(
+        x, mx.array(-1.0, dtype=x.dtype), mx.array(1.0, dtype=x.dtype)
+    )
 
 
 def hard_shrink(x, threshold=0.5):
@@ -241,7 +239,9 @@ def sparsemax(x, axis=-1):
     k = mx.sum(support.astype(mx.int32), axis=axis, keepdims=True).astype(
         x.dtype
     )
-    logits_cumsum_safe = mx.where(support, logits_cumsum, mx.array(0.0, dtype=x.dtype))
+    logits_cumsum_safe = mx.where(
+        support, logits_cumsum, mx.array(0.0, dtype=x.dtype)
+    )
     tau = (mx.sum(logits_cumsum_safe, axis=axis, keepdims=True) - 1) / k
     return mx.maximum(x - tau, mx.array(0.0, dtype=x.dtype))
 
@@ -274,9 +274,7 @@ def _gather_sum(inputs, pool_size, strides, num_spatial_dims):
     if num_spatial_dims == 1:
         out_l = out_shape[0]
         base_idx = mx.arange(out_l) * strides[0]
-        result = mx.zeros(
-            (batch_size, out_l, channels), dtype=inputs.dtype
-        )
+        result = mx.zeros((batch_size, out_l, channels), dtype=inputs.dtype)
         for ki in range(pool_size[0]):
             result = result + inputs[:, base_idx + ki, :]
 
@@ -302,13 +300,14 @@ def _gather_sum(inputs, pool_size, strides, num_spatial_dims):
         for ki in range(pool_size[0]):
             for kj in range(pool_size[1]):
                 for kk in range(pool_size[2]):
-                    result = result + inputs[:, base_d + ki][
-                        :, :, base_h + kj
-                    ][:, :, :, base_w + kk]
+                    result = (
+                        result
+                        + inputs[:, base_d + ki][:, :, base_h + kj][
+                            :, :, :, base_w + kk
+                        ]
+                    )
     else:
-        raise ValueError(
-            f"Pooling not supported for {num_spatial_dims}D."
-        )
+        raise ValueError(f"Pooling not supported for {num_spatial_dims}D.")
 
     return result
 
@@ -366,8 +365,9 @@ def _pool_nd(inputs, pool_size, strides, padding, mode, data_format):
         base_idx = mx.arange(out_l) * strides[0]
         # Gather all window elements
         if mode == "max":
-            result = mx.full((batch_size, out_l, channels), float("-inf"),
-                             dtype=inputs.dtype)
+            result = mx.full(
+                (batch_size, out_l, channels), float("-inf"), dtype=inputs.dtype
+            )
         else:
             result = mx.zeros((batch_size, out_l, channels), dtype=inputs.dtype)
 
@@ -470,7 +470,6 @@ def _pool_nd(inputs, pool_size, strides, padding, mode, data_format):
     return result
 
 
-
 def max_pool(
     inputs,
     pool_size,
@@ -500,9 +499,7 @@ def average_pool(
         pool_size = (pool_size,) * num_spatial_dims
     if strides is None:
         strides = pool_size
-    return _pool_nd(
-        inputs, pool_size, strides, padding, "average", data_format
-    )
+    return _pool_nd(inputs, pool_size, strides, padding, "average", data_format)
 
 
 # ---------------------------------------------------------------------------
@@ -571,9 +568,7 @@ def _adaptive_pool1d_impl(inputs, output_size, mode, data_format):
 
     sv_big = _strided_view_1d(inputs, big)
     big_pool = (
-        mx.mean(sv_big, axis=2)
-        if mode == "average"
-        else mx.max(sv_big, axis=2)
+        mx.mean(sv_big, axis=2) if mode == "average" else mx.max(sv_big, axis=2)
     )
 
     combined = mx.concatenate([small_pool, big_pool], axis=1)
@@ -688,9 +683,7 @@ def _adaptive_pool3d_impl(inputs, output_size, mode, data_format):
     small_h, big_h = compute_adaptive_pooling_window_sizes(h, out_h)
     gather_h = _compute_adaptive_pooling_gather_indices(h, out_h, big_h)
 
-    x_h = mx.transpose(pooled_d, (0, 1, 3, 2, 4)).reshape(
-        n * out_d * w, h, c
-    )
+    x_h = mx.transpose(pooled_d, (0, 1, 3, 2, 4)).reshape(n * out_d * w, h, c)
 
     sv_small_h = _strided_view_1d(x_h, small_h)
     small_pool_h = (
@@ -801,8 +794,9 @@ def _transpose_kernel_to_mlx(kernel, num_spatial_dims):
     return mx.transpose(kernel, new_axes)
 
 
-def _compute_same_padding_conv(input_spatial, kernel_spatial, strides,
-                                dilation_rate):
+def _compute_same_padding_conv(
+    input_spatial, kernel_spatial, strides, dilation_rate
+):
     """Compute explicit 'same' padding for convolution."""
     padding = []
     for i in range(len(input_spatial)):
@@ -921,9 +915,7 @@ def conv(
 
     # Convert back to channels_first if needed
     if data_format == "channels_first":
-        perm = (0, num_spatial_dims + 1) + tuple(
-            range(1, num_spatial_dims + 1)
-        )
+        perm = (0, num_spatial_dims + 1) + tuple(range(1, num_spatial_dims + 1))
         result = mx.transpose(result, perm)
 
     return result
@@ -951,13 +943,11 @@ def depthwise_conv(
     # Keras depthwise kernel: (*spatial, in_ch, depth_mult)
     # We need to reshape to (*spatial, 1, in_ch * depth_mult)
     depth_multiplier = kernel.shape[-1]
-    new_kernel_shape = (
-        kernel.shape[:num_spatial_dims]
-        + (1, feature_group_count * depth_multiplier)
+    new_kernel_shape = kernel.shape[:num_spatial_dims] + (
+        1,
+        feature_group_count * depth_multiplier,
     )
-    kernel = mx.reshape(
-        convert_to_tensor(kernel), new_kernel_shape
-    )
+    kernel = mx.reshape(convert_to_tensor(kernel), new_kernel_shape)
 
     return conv(
         inputs,
@@ -1044,7 +1034,8 @@ def conv_transpose(
     # For conv_general, we need to compute the padding that achieves the
     # desired output shape. With input_dilation = strides and kernel_dilation
     # = dilation_rate, we use the JAX padding values.
-    # conv_general padding format: tuple of (list_of_pad_before, list_of_pad_after)
+    # conv_general padding format: tuple of
+    # (list_of_pad_before, list_of_pad_after)
     pad_before = [p[0] for p in padding_values]
     pad_after = [p[1] for p in padding_values]
 
@@ -1060,9 +1051,7 @@ def conv_transpose(
 
     # Convert back to channels_first if needed
     if data_format == "channels_first":
-        perm = (0, num_spatial_dims + 1) + tuple(
-            range(1, num_spatial_dims + 1)
-        )
+        perm = (0, num_spatial_dims + 1) + tuple(range(1, num_spatial_dims + 1))
         result = mx.transpose(result, perm)
 
     return result
@@ -1075,9 +1064,7 @@ def conv_transpose(
 
 def one_hot(x, num_classes, axis=-1, dtype=None, sparse=False):
     if sparse:
-        raise ValueError(
-            "Unsupported value `sparse=True` with mlx backend"
-        )
+        raise ValueError("Unsupported value `sparse=True` with mlx backend")
     if dtype is None:
         dtype = "float32"
     x = convert_to_tensor(x)
@@ -1112,9 +1099,7 @@ def one_hot(x, num_classes, axis=-1, dtype=None, sparse=False):
 
 def multi_hot(x, num_classes, axis=-1, dtype=None, sparse=False):
     if sparse:
-        raise ValueError(
-            "Unsupported value `sparse=True` with mlx backend"
-        )
+        raise ValueError("Unsupported value `sparse=True` with mlx backend")
     x = convert_to_tensor(x)
     reduction_axis = 1 if len(x.shape) > 1 else 0
     outputs = mx.max(
@@ -1155,9 +1140,7 @@ def categorical_crossentropy(target, output, from_logits=False, axis=-1):
     return -mx.sum(target * log_prob, axis=axis)
 
 
-def sparse_categorical_crossentropy(
-    target, output, from_logits=False, axis=-1
-):
+def sparse_categorical_crossentropy(target, output, from_logits=False, axis=-1):
     target = convert_to_tensor(target, dtype="int32")
     output = convert_to_tensor(output)
     if len(target.shape) == len(output.shape) and target.shape[-1] == 1:
@@ -1234,9 +1217,9 @@ def ctc_loss(target, output, target_length, output_length, mask_index=0):
     ).astype(output.dtype)
 
     logprobs = log_softmax(output, axis=-1)
-    label_lengths = max_label_length - mx.sum(
-        target_paddings, axis=1
-    ).astype(mx.int32)
+    label_lengths = max_label_length - mx.sum(target_paddings, axis=1).astype(
+        mx.int32
+    )
 
     # repeat[b, n] == 1.0 when label[b, n] == label[b, n+1]
     repeat = (target[:, :-1] == target[:, 1:]).astype(mx.float32)
@@ -1270,9 +1253,7 @@ def ctc_loss(target, output, target_length, output_length, mask_index=0):
     def loop_body(prev, x):
         prev_phi, prev_emit = prev
         prev_phi_orig = prev_phi
-        prev_phi = update_phi_score(
-            prev_phi, prev_emit + log_epsilon * repeat
-        )
+        prev_phi = update_phi_score(prev_phi, prev_emit + log_epsilon * repeat)
 
         logprob_emit, logprob_phi, pad = x
 
@@ -1306,17 +1287,11 @@ def ctc_loss(target, output, target_length, output_length, mask_index=0):
     logalpha_emit = mx.stack(all_emit)
 
     # Last row update with epsilon transition
-    logalpha_phi_last = update_phi_score(
-        logalpha_phi[-1], logalpha_emit[-1]
-    )
+    logalpha_phi_last = update_phi_score(logalpha_phi[-1], logalpha_emit[-1])
 
     # Extract per_seq_loss
-    _one_hot_labels = one_hot(
-        label_lengths, num_classes=max_label_length + 1
-    )
-    per_seq_loss = -mx.sum(
-        logalpha_phi_last * _one_hot_labels, axis=-1
-    )
+    _one_hot_labels = one_hot(label_lengths, num_classes=max_label_length + 1)
+    per_seq_loss = -mx.sum(logalpha_phi_last * _one_hot_labels, axis=-1)
     return per_seq_loss
 
 
@@ -1436,9 +1411,7 @@ def moments(x, axes, keepdims=False, synchronized=False):
 
     mean = mx.mean(x, axis=axes, keepdims=True)
     # Var = E[|x|^2] - |E[x]|^2
-    variance = mx.mean(mx.square(x), axis=axes, keepdims=True) - mx.square(
-        mean
-    )
+    variance = mx.mean(mx.square(x), axis=axes, keepdims=True) - mx.square(mean)
 
     if not keepdims:
         mean = mx.squeeze(mean, axis=axes)
@@ -1512,13 +1485,13 @@ def depth_to_space(x, block_size, data_format="channels_last"):
     x = convert_to_tensor(x)
     if data_format == "channels_last":
         n, h, w, c = x.shape
-        new_c = c // (block_size ** 2)
+        new_c = c // (block_size**2)
         x = mx.reshape(x, (n, h, w, block_size, block_size, new_c))
         x = mx.transpose(x, (0, 1, 3, 2, 4, 5))
         x = mx.reshape(x, (n, h * block_size, w * block_size, new_c))
     else:
         n, c, h, w = x.shape
-        new_c = c // (block_size ** 2)
+        new_c = c // (block_size**2)
         x = mx.reshape(x, (n, new_c, block_size, block_size, h, w))
         x = mx.transpose(x, (0, 1, 4, 2, 5, 3))
         x = mx.reshape(x, (n, new_c, h * block_size, w * block_size))
@@ -1533,14 +1506,14 @@ def space_to_depth(x, block_size, data_format="channels_last"):
         new_w = w // block_size
         x = mx.reshape(x, (n, new_h, block_size, new_w, block_size, c))
         x = mx.transpose(x, (0, 1, 3, 2, 4, 5))
-        x = mx.reshape(x, (n, new_h, new_w, c * block_size ** 2))
+        x = mx.reshape(x, (n, new_h, new_w, c * block_size**2))
     else:
         n, c, h, w = x.shape
         new_h = h // block_size
         new_w = w // block_size
         x = mx.reshape(x, (n, c, new_h, block_size, new_w, block_size))
         x = mx.transpose(x, (0, 1, 3, 5, 2, 4))
-        x = mx.reshape(x, (n, c * block_size ** 2, new_h, new_w))
+        x = mx.reshape(x, (n, c * block_size**2, new_h, new_w))
     return x
 
 
@@ -1589,9 +1562,7 @@ def dot_product_attention(
     if flash_attention is None:
         flash_attention = False
     if flash_attention:
-        raise ValueError(
-            "Flash attention is not supported in mlx backend."
-        )
+        raise ValueError("Flash attention is not supported in mlx backend.")
 
     query = convert_to_tensor(query)
     key = convert_to_tensor(key)
@@ -1626,9 +1597,7 @@ def dot_product_attention(
 
     # Softmax in float32 for stability
     padded_logits = padded_logits.astype(mx.float32)
-    probs = mx.softmax(padded_logits, axis=-1).astype(
-        value.dtype
-    )
+    probs = mx.softmax(padded_logits, axis=-1).astype(value.dtype)
 
     # probs: (B, N, T, S), value: (B, S, N, H) -> encoded: (B, T, N, H)
     encoded = mx.einsum("BNTS,BSNH->BTNH", probs, value)

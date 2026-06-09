@@ -477,7 +477,7 @@ def bidirectional_gru(
 
 
 def unstack(x, axis=0):
-    return [x.take(i, axis) for i in range(x.shape[axis])]
+    return [mx.take(x, i, axis=axis) for i in range(x.shape[axis])]
 
 
 def mlx_scan(f, init, xs, reverse=False, mask=None):
@@ -507,5 +507,10 @@ def mlx_scan(f, init, xs, reverse=False, mask=None):
     return states, outputs
 
 
-def cudnn_ok(*args, **kwargs):
+def cudnn_ok(
+    activation,
+    recurrent_activation,
+    unroll,
+    use_bias=True,
+):
     return False
