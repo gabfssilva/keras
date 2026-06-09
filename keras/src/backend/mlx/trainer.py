@@ -58,6 +58,21 @@ class MLXTrainer(base_trainer.Trainer):
                 loss_fn, argnums=list(range(len(trainable_values)))
             )
             loss, grads = grad_fn(*trainable_values)
+            group = mx.distributed.init(strict=False)
+            world_size = group.size()
+            if world_size > 1:
+                # A single trainable variable yields a bare array (not a
+                # tuple), so normalize before averaging across replicas.
+                if isinstance(grads, (list, tuple)):
+                    grads = [
+                        mx.distributed.all_sum(g, group=group) / world_size
+                        for g in grads
+                    ]
+                else:
+                    grads = (
+                        mx.distributed.all_sum(grads, group=group)
+                        / world_size
+                    )
             self.optimizer.apply(grads, self.trainable_variables)
             # Force evaluation to ensure state is updated
             mx.eval(*self._get_trainable_values())
