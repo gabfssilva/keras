@@ -668,7 +668,7 @@ class Model(Trainer, base_trainer.Trainer, Layer):
                 artifact.
             format: `str`. The export format. Supported values:
                 `"tf_saved_model"`, `"onnx"`, `"openvino"`, `"litert"`,
-                and `"torch"`. Defaults to `"tf_saved_model"`.
+                `"torch"`, and `"mlx"`. Defaults to `"tf_saved_model"`.
             verbose: `bool`. Whether to print a message during export. Defaults
                 to `None`, which uses the default value set by different
                 backends and formats.
@@ -715,6 +715,11 @@ class Model(Trainer, base_trainer.Trainer, Layer):
                     `dynamic_shapes`,
                     `prefer_deferred_runtime_asserts_over_guards`, and
                     `preserve_module_call_signature`.
+                - `shapeless`: Optional `bool`. Specific to `format="mlx"`. If
+                    `True`, export a function that accepts inputs with variable
+                    shapes (e.g. a dynamic batch size). If omitted, it is
+                    inferred from `input_signature`: shapeless when any
+                    dimension is dynamic (e.g. a `None` batch size).
 
         **Note on LiteRT (TFLite) Export with PyTorch Backend:**
         With the PyTorch backend, LiteRT export (`format="litert"`) does not
@@ -788,8 +793,21 @@ class Model(Trainer, base_trainer.Trainer, Layer):
         loaded_program = torch.export.load("path/to/model.pt2")
         predictions = loaded_program.module()(input_tensor)
         ```
+
+        Here's how to export a native MLX artifact for inference.
+
+        ```python
+        # Export the model as a native MLX artifact
+        model.export("path/to/model.mlxfn", format="mlx")
+
+        # Load the artifact in a different process/environment
+        import mlx.core as mx
+        fn = mx.import_function("path/to/model.mlxfn")
+        predictions = fn(mx.array(input_data))
+        ```
         """
         from keras.src.export import export_litert
+        from keras.src.export import export_mlx
         from keras.src.export import export_onnx
         from keras.src.export import export_openvino
         from keras.src.export import export_saved_model
@@ -801,6 +819,7 @@ class Model(Trainer, base_trainer.Trainer, Layer):
             "openvino",
             "litert",
             "torch",
+            "mlx",
         )
         if format not in available_formats:
             raise ValueError(
@@ -821,6 +840,10 @@ class Model(Trainer, base_trainer.Trainer, Layer):
         # Check if Torch export is available (requires PyTorch backend)
         if format == "torch" and backend.backend() != "torch":
             raise ValueError("Torch export requires PyTorch backend.")
+
+        # Check if MLX export is available (requires MLX backend)
+        if format == "mlx" and backend.backend() != "mlx":
+            raise ValueError("MLX export requires the MLX backend.")
 
         if format == "tf_saved_model":
             export_saved_model(
@@ -856,6 +879,14 @@ class Model(Trainer, base_trainer.Trainer, Layer):
             )
         elif format == "torch":
             export_torch(
+                self,
+                filepath,
+                verbose=verbose,
+                input_signature=input_signature,
+                **kwargs,
+            )
+        elif format == "mlx":
+            export_mlx(
                 self,
                 filepath,
                 verbose=verbose,

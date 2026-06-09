@@ -1,6 +1,6 @@
 # Keras 3: Deep Learning for Humans
 
-Keras 3 is a multi-backend deep learning framework, with support for JAX, TensorFlow, PyTorch, and OpenVINO (for inference-only).
+Keras 3 is a multi-backend deep learning framework, with support for JAX, TensorFlow, PyTorch, MLX, and OpenVINO (for inference-only).
 Effortlessly build and train models for computer vision, natural language processing, audio processing,
 timeseries forecasting, recommender systems, etc.
 
@@ -65,6 +65,7 @@ The following table lists the minimum supported versions of each backend for the
 | JAX        | 0.4.20                    |
 | PyTorch    | 2.1.0                     |
 | OpenVINO   | 2025.3.0                  |
+| MLX        | 0.31.2                    |
 
 #### Adding GPU support
 
@@ -83,7 +84,7 @@ python pip_build.py --install
 ## Configuring your backend
 
 You can export the environment variable `KERAS_BACKEND` or you can edit your local config file at `~/.keras/keras.json`
-to configure your backend. Available backend options are: `"tensorflow"`, `"jax"`, `"torch"`, `"openvino"`. Example:
+to configure your backend. Available backend options are: `"tensorflow"`, `"jax"`, `"torch"`, `"openvino"`, `"mlx"`. Example:
 
 ```
 export KERAS_BACKEND="jax"
@@ -103,6 +104,9 @@ the package has been imported.
 
 **Note:** The OpenVINO backend is an inference-only backend, meaning it is designed only for running model
 predictions using `model.predict()` method.
+
+**Note:** The MLX backend runs on Apple Silicon (Metal). Export is supported via the native MLX format
+(`model.export(path, format="mlx")`); TensorFlow SavedModel/ONNX export and distributed training are not.
 
 ## Backwards compatibility
 
