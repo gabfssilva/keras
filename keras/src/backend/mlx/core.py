@@ -113,9 +113,7 @@ def convert_to_tensor(x, dtype=None, sparse=None, ragged=None):
     if dtype is not None:
         dtype = standardize_dtype(dtype)
     if isinstance(x, Variable):
-        if dtype and dtype != x.dtype:
-            return mx.array(np.array(x.value), dtype=_to_mlx_dtype(dtype))
-        return x.value
+        x = x.value
     if isinstance(x, mx.array):
         if dtype is None:
             return x
