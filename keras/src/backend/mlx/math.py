@@ -100,7 +100,7 @@ def in_top_k(targets, predictions, k):
     targets = convert_to_tensor(targets)
     predictions = convert_to_tensor(predictions)
     targets = mx.expand_dims(targets, axis=-1)
-    topk_values = top_k(predictions, k)[0]
+    topk_values = top_k(predictions, k, sorted=False)[0]
     targets_values = mx.take_along_axis(predictions, targets, axis=-1)
     mask = targets_values >= topk_values
     return mx.any(mask, axis=-1)

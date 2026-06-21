@@ -2903,10 +2903,37 @@ def correlate(x1, x2, mode="valid"):
     )
     if dtype == "int64":
         dtype = "float64"
-    elif dtype not in ["bfloat16", "float16", "float64"]:
+    elif dtype not in [
+        "bfloat16",
+        "float16",
+        "float64",
+        "complex64",
+        "complex128",
+    ]:
         dtype = "float32"
     x1 = convert_to_tensor(x1, dtype)
     x2 = convert_to_tensor(x2, dtype)
+    if dtype in ("complex64", "complex128"):
+        # mx.convolve is float-only, so correlate complex inputs by hand.
+        # numpy.correlate conjugates the second operand.
+        x2 = mx.conj(x2)
+        reverse_output = len(x1) < len(x2)
+        if reverse_output:
+            x1, x2 = x2, x1
+        if mode == "same":
+            pad = x2.shape[0] // 2
+            x1 = mx.pad(x1, [(pad, x2.shape[0] - pad - 1)])
+        elif mode == "full":
+            pad = x2.shape[0] - 1
+            x1 = mx.pad(x1, [(pad, pad)])
+        elif mode != "valid":
+            raise ValueError("mode must be one of ['full', 'same', 'valid']")
+        output_size = len(x1) - len(x2) + 1
+        result = mx.stack(
+            [mx.sum(x1[i : i + len(x2)] * x2) for i in range(output_size)]
+        )
+        return result[::-1] if reverse_output else result
+    # Real path: numpy.correlate(a, v) == convolve(a, v[::-1]).
     return mx.convolve(x1, _flip(x2), mode=mode)
 
 
@@ -2973,9 +3000,12 @@ def histogram(x, bins=10, range=None):
     if range is not None:
         lo, hi = float(range[0]), float(range[1])
     else:
-        mx.eval(x_flat)
-        lo, hi = float(mx.min(x_flat)), float(mx.max(x_flat))
-    bin_edges = mx.linspace(lo, hi, bins + 1)
+        # Keep lo/hi as (lazy) arrays instead of forcing `float(...)`: under
+        # `mx.compile` an eval/`mx.linspace` on traced data is not allowed.
+        lo, hi = mx.min(x_flat), mx.max(x_flat)
+    # Equivalent to mx.linspace(lo, hi, bins + 1) in numpy's evaluation order,
+    # but compile-safe (linspace rejects traced endpoints).
+    bin_edges = mx.arange(bins + 1) * ((hi - lo) / bins) + lo
     # Assign each element to a bin via broadcast comparison
     # x_flat[:, None] >= bin_edges[None, :-1] and
     # x_flat[:, None] < bin_edges[None, 1:]

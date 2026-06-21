@@ -73,14 +73,14 @@ class MLXTrainer(base_trainer.Trainer):
                 sample_weight=sample_weight,
                 training=True,
             )
-            return loss
+            return loss, y_pred
 
         trainable_values = self._get_trainable_values()
         if trainable_values:
             grad_fn = mx.value_and_grad(
                 loss_fn, argnums=list(range(len(trainable_values)))
             )
-            loss, grads = grad_fn(*trainable_values)
+            (loss, y_pred), grads = grad_fn(*trainable_values)
             group = mx.distributed.init(strict=False)
             world_size = group.size()
             if world_size > 1:
@@ -97,14 +97,8 @@ class MLXTrainer(base_trainer.Trainer):
                     )
             self.optimizer.apply(grads, self.trainable_variables)
         else:
-            loss = loss_fn()
+            loss, y_pred = loss_fn()
             warnings.warn("The model does not have any trainable weights.")
-
-        # Recompute predictions for metrics
-        if self._call_has_training_arg:
-            y_pred = self(x, training=True)
-        else:
-            y_pred = self(x)
 
         self._loss_tracker.update_state(
             loss,

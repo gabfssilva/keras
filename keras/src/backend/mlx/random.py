@@ -81,6 +81,11 @@ def gamma(shape, alpha, dtype=None, seed=None):
     dtype = dtype or floatx()
     key = _get_key(seed)
     alpha = convert_to_tensor(alpha, dtype="float32")
+    if mx.any(alpha <= 0.0):
+        raise ValueError(
+            "Invalid value for argument `alpha`. All alpha values must be "
+            f"> 0, received alpha={alpha}"
+        )
     alpha = mx.broadcast_to(alpha, shape)
     # Marsaglia-Tsang method for gamma(alpha >= 1)
     # For alpha < 1: gamma(alpha) = gamma(alpha+1) * U^(1/alpha)
@@ -126,6 +131,16 @@ def binomial(shape, counts, probabilities, dtype=None, seed=None):
     key = _get_key(seed)
     counts = convert_to_tensor(counts, dtype="float32")
     probabilities = convert_to_tensor(probabilities, dtype="float32")
+    if mx.any(counts < 0.0):
+        raise ValueError(
+            "Invalid value for argument `counts`. All counts must be >= 0, "
+            f"received counts={counts}"
+        )
+    if mx.any(probabilities < 0.0) or mx.any(probabilities > 1.0):
+        raise ValueError(
+            "Invalid value for argument `probabilities`. All probabilities "
+            f"must be in [0, 1], received probabilities={probabilities}"
+        )
     counts = mx.broadcast_to(counts, shape)
     probabilities = mx.broadcast_to(probabilities, shape)
     # Sum of Bernoulli trials

@@ -3,10 +3,10 @@ import contextlib
 import functools
 import warnings
 
-import mlx.core as mx
-
-# np is ONLY for the I/O bridge (convert_to_tensor input,
+# np and ml_dtypes are ONLY for the I/O bridge (convert_to_tensor input,
 # convert_to_numpy output)
+import ml_dtypes
+import mlx.core as mx
 import numpy as np
 
 # All computation must use mlx.core — never np for math/indexing
@@ -134,6 +134,10 @@ def convert_to_tensor(x, dtype=None, sparse=None, ragged=None):
         # Avoid the numpy round-trip: it would force evaluation, which is
         # not allowed while tracing under `mx.compile`.
         return mx.stack([convert_to_tensor(item, dtype=dtype) for item in x])
+    if isinstance(x, np.ndarray) and x.dtype == ml_dtypes.bfloat16:
+        # mlx mis-casts a bfloat16 ndarray to complex64; upcast to float32
+        # first, then retag as the target mlx dtype.
+        return mx.array(x.astype(np.float32), dtype=mlx_dtype)
     return mx.array(np.array(x, dtype=dtype), dtype=mlx_dtype)
 
 
@@ -141,6 +145,10 @@ def convert_to_numpy(x):
     if isinstance(x, Variable):
         x = x.value
     if isinstance(x, mx.array):
+        if x.dtype == mx.bfloat16:
+            # mlx cannot export bfloat16 to numpy directly; upcast to float32
+            # then retag as ml_dtypes.bfloat16.
+            return np.array(x.astype(mx.float32)).astype(ml_dtypes.bfloat16)
         mx.eval(x)
         return np.array(x)
     return np.array(x)

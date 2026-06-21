@@ -1,3 +1,4 @@
+import builtins
 import math
 
 import mlx.core as mx
@@ -9,6 +10,7 @@ from keras.src.backend.common.backend_utils import (
 from keras.src.backend.common.backend_utils import (
     compute_conv_transpose_padding_args_for_jax,
 )
+from keras.src.backend.mlx.core import _flip
 from keras.src.backend.mlx.core import cast
 from keras.src.backend.mlx.core import convert_to_tensor
 
@@ -1199,7 +1201,7 @@ def ctc_loss(target, output, target_length, output_length, mask_index=0):
     log_epsilon = -1e5
 
     dtype = backend.result_type(output.dtype, "float32")
-    output = output.astype(dtype)
+    output = cast(output, dtype)
 
     def _lengths_to_paddings(lengths, max_length):
         indices = mx.arange(max_length).reshape(
@@ -1343,6 +1345,38 @@ def _ctc_greedy_decode(
     return indices, scores
 
 
+def _unique_2d(arr, size=None, fill_value=0, return_inverse=True):
+    if arr.ndim != 2:
+        raise ValueError(
+            f"Invalid dimension: {arr.ndim}"
+            "unique_2d only supports 2 dimensional arrays"
+        )
+
+    unique_set = set()
+    indices = []
+
+    for i, row in enumerate(arr):
+        row_tuple = tuple(row.tolist())
+        if row_tuple not in unique_set:
+            unique_set.add(row_tuple)
+            indices.append(i)
+
+    unique_vals = mx.array([list(t) for t in sorted(unique_set)])
+
+    if size is not None:
+        pad_rows = size - len(unique_vals)
+        if pad_rows > 0:
+            padding = mx.full((pad_rows, arr.shape[1]), fill_value)
+            unique_vals = mx.concatenate([unique_vals, padding])
+
+    unique_dict = {tuple(row.tolist()): i for i, row in enumerate(unique_vals)}
+    inverse = mx.array([unique_dict[tuple(row.tolist())] for row in arr])
+    if return_inverse:
+        return unique_vals, inverse
+    else:
+        return unique_vals
+
+
 def _ctc_beam_search_decode(
     inputs,
     sequence_lengths,
@@ -1350,9 +1384,193 @@ def _ctc_beam_search_decode(
     top_paths=1,
     mask_index=None,
 ):
-    raise NotImplementedError(
-        "Beam search CTC decoding is not supported with the MLX backend."
+    inputs = convert_to_tensor(inputs)
+    sequence_lengths = convert_to_tensor(sequence_lengths)
+
+    batch_size, max_seq_len, num_classes = inputs.shape
+    inputs = log_softmax(inputs)
+    seqlen_mask = mx.arange(max_seq_len)[None, :] >= sequence_lengths[:, None]
+
+    if mask_index is None:
+        mask_index = num_classes - 1
+
+    # This is a workaround for the fact that mlx.core.argsort does not support
+    # the order parameter which is used to break ties when scores are equal.
+    # For compatibility with the tensorflow implementation, we flip the inputs
+    # and the mask_index, and then flip the classes back to the correct indices
+    inputs = _flip(inputs, axis=2)
+    mask_index = num_classes - mask_index - 1
+
+    _pad = -1
+
+    init_paths = mx.full(
+        (batch_size, 2 * beam_width, max_seq_len), _pad, dtype=mx.int32
     )
+
+    num_init_paths = builtins.min(num_classes, beam_width)
+    max_classes = mx.argsort(inputs[:, 0], axis=1)[:, -num_init_paths:].astype(
+        mx.int32
+    )
+    init_classes = mx.where(max_classes == mask_index, _pad, max_classes)
+    init_paths[:, :num_init_paths, 0] = init_classes
+
+    init_scores = mx.full(
+        (batch_size, 2 * beam_width), -mx.inf, dtype=inputs.dtype
+    )
+    init_scores[:, :num_init_paths] = mx.take_along_axis(
+        inputs[:, 0], max_classes, axis=1
+    )
+    init_masked = init_paths[:, :, 0] == _pad
+
+    def _extend_paths(paths, scores, masked, x):
+        paths = mx.repeat(paths, num_classes, axis=0)
+        scores = mx.repeat(scores, num_classes)
+        masked = mx.repeat(masked, num_classes)
+
+        path_tail_index = mx.argmax(paths == _pad, axis=1).astype(mx.int32)
+        paths_arange = mx.arange(2 * beam_width * num_classes)
+        path_tails = paths[paths_arange, path_tail_index - 1]
+        path_tails = mx.where(path_tail_index == 0, _pad, path_tails)
+
+        classes = mx.arange(num_classes)
+        classes[mask_index] = _pad
+        classes = mx.tile(classes, 2 * beam_width)
+
+        prev_masked = masked
+        masked = classes == _pad
+
+        masked_repeat = ~prev_masked & (path_tails == classes)
+        classes = mx.where(masked_repeat, _pad, classes)
+        paths = (
+            paths.at[paths_arange, path_tail_index]
+            .multiply(0)
+            .at[paths_arange, path_tail_index]
+            .add(classes)
+        )
+
+        x = mx.tile(x, 2 * beam_width)
+        scores = scores + x
+
+        return paths, scores, masked
+
+    def _merge_scores(unique_inverse, scores):
+        scores_max = mx.max(scores)
+        scores_exp = mx.exp(scores - scores_max)
+        scores = mx.zeros_like(scores).at[unique_inverse].add(scores_exp)
+        scores = mx.log(scores) + scores_max
+        return scores
+
+    def _prune_paths(paths, scores, masked):
+        paths, unique_inverse = _unique_2d(
+            paths,
+            return_inverse=True,
+            size=2 * num_classes * beam_width,
+            fill_value=_pad,
+        )
+        if len(unique_inverse.shape) >= 2:
+            unique_inverse = mx.squeeze(unique_inverse, axis=1)
+
+        emit_scores = mx.where(masked, -mx.inf, scores)
+        mask_scores = mx.where(masked, scores, -mx.inf)
+
+        emit_scores = _merge_scores(unique_inverse, emit_scores)
+        mask_scores = _merge_scores(unique_inverse, mask_scores)
+
+        total_scores = mx.logaddexp(emit_scores, mask_scores)
+        top_indices = mx.argsort(total_scores)[-beam_width:]
+
+        paths = paths[top_indices]
+        emit_scores = emit_scores[top_indices]
+        mask_scores = mask_scores[top_indices]
+
+        paths = mx.tile(paths, (2, 1))
+        scores = mx.concatenate([emit_scores, mask_scores])
+        masked = mx.concatenate(
+            [
+                mx.zeros(beam_width, dtype=mx.bool_),
+                mx.ones(beam_width, dtype=mx.bool_),
+            ]
+        )
+
+        return paths, scores, masked
+
+    def _decode_step(paths, scores, masked, x):
+        paths, scores, masked = _extend_paths(paths, scores, masked, x)
+        paths, scores, masked = _prune_paths(paths, scores, masked)
+        return paths, scores, masked
+
+    def _step(prev, x):
+        paths, scores, masked = prev
+        x, seqlen_mask = x
+
+        new_paths, new_scores, new_masked = _decode_step(
+            paths, scores, masked, x
+        )
+
+        # Keep old values where seqlen_mask is True
+        mask_expanded = (
+            seqlen_mask[..., None]
+            if seqlen_mask.ndim < paths.ndim
+            else seqlen_mask
+        )
+        paths = mx.where(mask_expanded, paths, new_paths)
+        scores = mx.where(mask_expanded, scores, new_scores)
+        masked = mx.where(mask_expanded, masked, new_masked)
+        return (paths, scores, masked), None
+
+    def _decode_batch(
+        init_paths, init_scores, init_masked, inputs, seqlen_mask
+    ):
+        paths, scores, masked = (init_paths, init_scores, init_masked)
+        for i in range(len(inputs) - 1):
+            (paths, scores, masked), _ = _step(
+                (paths, scores, masked), (inputs[i + 1], seqlen_mask[i + 1])
+            )
+
+        paths, unique_inverse = _unique_2d(
+            paths,
+            return_inverse=True,
+            size=2 * num_classes * beam_width,
+            fill_value=_pad,
+        )
+        if len(unique_inverse.shape) >= 2:
+            unique_inverse = mx.squeeze(unique_inverse, axis=1)
+        scores = _merge_scores(unique_inverse, scores)
+
+        top_indices = mx.argsort(scores)[-top_paths:][::-1]
+        paths = paths[top_indices]
+        scores = scores[top_indices]
+
+        return paths, scores
+
+    def _decode_batch_loop(
+        init_paths, init_scores, init_masked, inputs, seqlen_mask
+    ):
+        batch_size = init_paths.shape[0]
+        all_paths = []
+        all_scores = []
+
+        for b in range(batch_size):
+            paths, scores = _decode_batch(
+                init_paths[b],
+                init_scores[b],
+                init_masked[b],
+                inputs[b],
+                seqlen_mask[b],
+            )
+            all_paths.append(paths)
+            all_scores.append(scores)
+
+        return mx.stack(all_paths), mx.stack(all_scores)
+
+    paths, scores = _decode_batch_loop(
+        init_paths, init_scores, init_masked, inputs, seqlen_mask
+    )
+
+    # convert classes back to the correct indices
+    paths = mx.where(paths == _pad, _pad, num_classes - paths - 1)
+    paths = mx.transpose(paths, [1, 0, 2])
+    return paths, scores
 
 
 def ctc_decode(
@@ -1523,8 +1741,7 @@ def space_to_depth(x, block_size, data_format="channels_last"):
 
 
 def _get_large_negative(dtype):
-    dtype = backend.standardize_dtype(dtype)
-    val = 65500.0 if dtype == "float16" else 3.38953e38
+    val = 65500.0 if dtype == mx.float16 else 3.38953e38
     return mx.array(val * -0.7, dtype=dtype)
 
 

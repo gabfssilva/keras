@@ -628,7 +628,7 @@ def affine_transform(
         )
 
     input_dtype = backend.standardize_dtype(images.dtype)
-    compute_dtype = backend.result_type(input_dtype, "float32")
+    compute_dtype = _to_mlx_dtype(backend.result_type(input_dtype, "float32"))
     images = images.astype(compute_dtype)
     transform = transform.astype(compute_dtype)
 
@@ -721,7 +721,7 @@ def affine_transform(
         affined = mx.transpose(affined, (0, 3, 1, 2))
     if need_squeeze:
         affined = mx.squeeze(affined, axis=0)
-    return affined.astype(input_dtype)
+    return affined.astype(_to_mlx_dtype(input_dtype))
 
 
 # ---------------------------------------------------------------------------
@@ -1004,6 +1004,18 @@ def compute_homography_matrix(start_points, end_points):
 # ---------------------------------------------------------------------------
 
 
+def _mirror_index_fixer(index, size):
+    s = size - 1  # Half-wavelength of triangular wave
+    # Scaled, integer-valued version of the triangular wave |x - round(x)|
+    return mx.abs((index + s) % (2 * s) - s)
+
+
+def _reflect_index_fixer(index, size):
+    return mx.floor_divide(
+        _mirror_index_fixer(2 * index + 1, 2 * size + 1) - 1, 2
+    )
+
+
 def map_coordinates(
     inputs, coordinates, order, fill_mode="constant", fill_value=0.0
 ):
@@ -1053,10 +1065,7 @@ def map_coordinates(
             coord = mx.abs(coord) % period
             return mx.where(coord >= size, period - coord, coord)
         elif fill_mode == "reflect":
-            # reflect (symmetric): period = 2*size
-            period = 2 * size if size > 0 else 1
-            coord = mx.abs(coord) % period
-            return mx.where(coord >= size, period - coord - 1, coord)
+            return _reflect_index_fixer(coord, size)
         return coord
 
     if order == 0:
